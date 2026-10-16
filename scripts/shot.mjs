@@ -8,7 +8,9 @@
 // Pages: default is the full golf game (index.html); --page putting.html for the putting game.
 //
 // Flags: --page FILE  --seed N  --mode normal|cheat  --cam auto|overhead  --grid 0|1  --hud 0|1
-//        --do EXPR (repeatable; evaluated as `__golf.EXPR` in order)  --out FILE
+//        --do EXPR (repeatable; evaluated as `__golf.EXPR` in order)
+//        --eval CODE (repeatable, interleaved with --do; arbitrary JS with `g` = window.__golf,
+//               e.g. --eval "g.view.dotMesh.visible = false; g.render()")  --out FILE
 //        --width W --height H  --frames DIR (with --putt-frames K: saves a frame every K ticks while rolling)
 import { chromium } from 'playwright';
 import fs from 'node:fs';
@@ -16,12 +18,14 @@ import path from 'node:path';
 import { startServer } from './serve.mjs';
 
 function parseArgs(argv) {
-  const a = { do: [] };
+  const a = { do: [], steps: [] };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (!k.startsWith('--')) continue;
     const key = k.slice(2), val = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : '1';
-    if (key === 'do') a.do.push(val); else a[key] = val;
+    if (key === 'do') { a.do.push(val); a.steps.push(['do', val]); }
+    else if (key === 'eval') a.steps.push(['eval', val]);
+    else a[key] = val;
   }
   return a;
 }
@@ -32,6 +36,9 @@ export async function launchBrowser() {
   catch { return await chromium.launch({ headless: true, args }); }
 }
 
+/** Wait for async hole building (worker-painted textures) if the page supports it. */
+export async function waitReady(page) { await page.evaluate(() => window.__golf.whenReady ? window.__golf.whenReady() : true); }
+
 export async function openGame(browser, port, { seed = 1, mode = '', cam = 'auto', grid = '1', hud = '1', width = 1280, height = 800, page: page_ = '' } = {}) {
   const page = await browser.newPage({ viewport: { width: Number(width), height: Number(height) } });
   const errors = [];
@@ -39,6 +46,7 @@ export async function openGame(browser, port, { seed = 1, mode = '', cam = 'auto
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
   await page.goto(`http://127.0.0.1:${port}/${page_ || ""}?seed=${seed}${mode ? `&mode=${mode}` : ''}&cam=${cam}&grid=${grid}&hud=${hud}&paused=1`);
   await page.waitForFunction(() => window.__golfReady === true, null, { timeout: 30000 });
+  await waitReady(page);
   await page.evaluate(() => window.__golf.render());
   return { page, errors };
 }
@@ -50,7 +58,11 @@ async function main() {
   const browser = await launchBrowser();
   try {
     const { page, errors } = await openGame(browser, port, a);
-    for (const expr of a.do) await page.evaluate(e => { (0, eval)('window.__golf.' + e); }, expr);
+    for (const [kind, expr] of a.steps) {
+      if (kind === 'do') await page.evaluate(e => { (0, eval)('window.__golf.' + e); }, expr);
+      else await page.evaluate(code => { const g = window.__golf; new Function('g', code)(g); }, expr);
+      await waitReady(page);
+    }
     if (a.frames) {
       // capture an animation: putt with current settings and save a frame every K ticks
       const k = Number(a['putt-frames'] || 10);

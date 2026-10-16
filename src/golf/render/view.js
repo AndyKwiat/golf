@@ -4,14 +4,15 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { BALL_R, CUP_R, FRINGE_WIDTH } from '../sim/constants.js';
-import { blobDist } from '../sim/hole.js';
+import { blobDist, cleanParams } from '../sim/hole.js';
 import { mulberry32 } from '../../sim/rng.js';
-import { Sky, SUN_DIR, HORIZON, radialTexture } from './sky.js';
+import { Sky, LIGHT_DIR as SUN_DIR, HORIZON, radialTexture } from './sky.js';
+import { pineCrown, roundCrown, trunkGeometry, leafTexture, needleTexture } from './trees.js';
 
-// Readability exaggerations (deliberately unrealistic so terrain shape is obvious)
+import { paintPixels, SHADE_MAIN, SHADE_GREEN, hashf, valueNoise, c255 } from './paint.js';
+
+// Readability exaggeration (deliberately unrealistic so terrain shape is obvious)
 const NORMAL_EXAGGERATION = 1.4;
-const SHADE_MAIN = 3.0, SHADE_GREEN = 4.5;
-const CONTOUR_STEP = 0.15;
 
 export class GolfView {
   constructor(canvas, game) {
@@ -21,6 +22,8 @@ export class GolfView {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;   // keeps colors vivid while allowing brighter lights
+    this.renderer.toneMappingExposure = 1.15;
 
     this.scene = new THREE.Scene();
     this.scene.background = HORIZON.clone();
@@ -38,16 +41,17 @@ export class GolfView {
 
     this.sky = new Sky(this.scene);
 
-    this.scene.add(new THREE.HemisphereLight(0xe8f6ff, 0x4a7a35, 1.15));
-    const fill = new THREE.DirectionalLight(0xbcd6ff, 0.75);
+    this.scene.add(new THREE.HemisphereLight(0xf2f9ff, 0x7aa858, 1.6));
+    const fill = new THREE.DirectionalLight(0xd2e4ff, 0.7);
     fill.position.set(-SUN_DIR.x, 0.5, -SUN_DIR.z);
     this.scene.add(fill);
-    this.sun = new THREE.DirectionalLight(0xfff0d6, 2.3);
+    this.sun = new THREE.DirectionalLight(0xfff5e2, 3.0);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     const sc = this.sun.shadow.camera;
     sc.left = -45; sc.right = 45; sc.top = 45; sc.bottom = -45; sc.near = 1; sc.far = 300;
     this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.intensity = 0.6;   // lighter, friendlier shadows
     this.scene.add(this.sun, this.sun.target);
 
     // Ball + halo
@@ -110,29 +114,57 @@ export class GolfView {
     }
     this.builtHole = h;
     const t0 = performance.now();
+    this.buildGen = (this.buildGen || 0) + 1;
+    if (!this.pool) this.pool = new PaintPool(Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1)));
+    this.paramsClean = cleanParams(h.params); this.paramsKey = `${h.seed}|${this.buildGen}`;
+    const paints = [];
+    this.greenTex = null;
 
-    // In-play rectangle
+    // In-play rectangle, snapped to the 1.5 m base grid
+    const STEP = 1.5, FINE = 6;   // base grid spacing; patches subdivide each base cell FINE x FINE (0.25 m)
     let xmin = Infinity, xmax = -Infinity;
     const cor = h.corridor() + 6;
     for (let z = -45; z <= h.L + 50; z += 5) { const c = h.cx(z), d = h.cxd(z), k = Math.sqrt(1 + d * d); xmin = Math.min(xmin, c - cor * k); xmax = Math.max(xmax, c + cor * k); }
-    const zmin = -48, zmax = h.L + 52;
+    xmin = Math.floor(xmin / STEP) * STEP; xmax = Math.ceil(xmax / STEP) * STEP;
+    const zmin = -48, zmax = Math.ceil((h.L + 52) / STEP) * STEP;
     this.playRect = { xmin, xmax, zmin, zmax };
-    const g = h.green, P = g.R0 * 1.45 + 7;
-    this.patch = { xmin: g.x - P, xmax: g.x + P, zmin: g.z - P, zmax: g.z + P };
 
-    const xs = axis(xmin, xmax, this.patch.xmin, this.patch.xmax, 320);
-    const zs = axis(zmin, zmax, this.patch.zmin, this.patch.zmax, 320);
+    // Hi-res patches (green + each bunker + each pond), snapped to base grid lines and merged
+    // where they overlap. Inside them the base mesh is cut out and replaced by a 0.25 m grid
+    // whose border vertices lie exactly on the base mesh edges (watertight, no T-junction cracks).
+    const snapRect = (x0, x1, z0, z1) => ({
+      xmin: Math.max(xmin, xmin + Math.floor((x0 - xmin) / STEP) * STEP), xmax: Math.min(xmax, xmin + Math.ceil((x1 - xmin) / STEP) * STEP),
+      zmin: Math.max(zmin, zmin + Math.floor((z0 - zmin) / STEP) * STEP), zmax: Math.min(zmax, zmin + Math.ceil((z1 - zmin) / STEP) * STEP),
+    });
+    const g = h.green, P = g.R0 * 1.45 + 6;
+    let rects = [{ ...snapRect(g.x - P, g.x + P, g.z - P, g.z + P), green: true, px: 0.04 }];
+    for (const b of h.bunkers) { const r = b._bound + 3; rects.push({ ...snapRect(b.x - r, b.x + r, b.z - r, b.z + r), px: 0.04 }); }
+    for (const p of h.ponds) { const r = p._bound + 4; rects.push({ ...snapRect(p.x - r, p.x + r, p.z - r, p.z + r), px: 0.08 }); }
+    for (let merged = true; merged;) {
+      merged = false;
+      outer: for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++) {
+        const A = rects[a], B = rects[b];
+        if (A.xmin < B.xmax && B.xmin < A.xmax && A.zmin < B.zmax && B.zmin < A.zmax) {
+          rects[a] = { xmin: Math.min(A.xmin, B.xmin), xmax: Math.max(A.xmax, B.xmax), zmin: Math.min(A.zmin, B.zmin), zmax: Math.max(A.zmax, B.zmax), green: A.green || B.green, px: Math.min(A.px, B.px) };
+          rects.splice(b, 1); merged = true; break outer;
+        }
+      }
+    }
+    this.patches = rects;
+    const inPatch = (x, z) => rects.some(r => x > r.xmin && x < r.xmax && z > r.zmin && z < r.zmax);
+
+    // Base mesh: uniform 1.5 m in play, spacing growing outside to a 320 m margin
+    const xs = axis(xmin, xmax, STEP, 320), zs = axis(zmin, zmax, STEP, 320);
     const NX = xs.length, NZ = zs.length, NV = NX * NZ;
-    const pos = new Float32Array(NV * 3), uv = new Float32Array(NV * 2), uv1 = new Float32Array(NV * 2), uv2 = new Float32Array(NV * 2);
+    const pos = new Float32Array(NV * 3), uv = new Float32Array(NV * 2), uv2 = new Float32Array(NV * 2);
     const H = new Float64Array(NV);
-    const pr = this.playRect, pa = this.patch;
+    const pr = this.playRect;
     for (let j = 0, k = 0; j < NZ; j++) {
       for (let i = 0; i < NX; i++, k++) {
         const x = xs[i], z = zs[j], y = h.height(x, z);
         H[k] = y;
         pos[k * 3] = x; pos[k * 3 + 1] = y; pos[k * 3 + 2] = z;
         uv[k * 2] = (x - pr.xmin) / (pr.xmax - pr.xmin); uv[k * 2 + 1] = (z - pr.zmin) / (pr.zmax - pr.zmin);
-        uv1[k * 2] = (x - pa.xmin) / (pa.xmax - pa.xmin); uv1[k * 2 + 1] = (z - pa.zmin) / (pa.zmax - pa.zmin);
         uv2[k * 2] = x / 7; uv2[k * 2 + 1] = z / 7;
       }
     }
@@ -142,51 +174,76 @@ export class GolfView {
     for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) {
       if (i === 0 || j === 0 || i === NX - 1 || j === NZ - 1) { const k = j * NX + i; H[k] = farY; pos[k * 3 + 1] = farY; }
     }
-    const nrm = new Float32Array(NV * 3);
-    for (let j = 0; j < NZ; j++) {
-      for (let i = 0; i < NX; i++) {
-        const k = j * NX + i;
-        const i0 = Math.max(0, i - 1), i1 = Math.min(NX - 1, i + 1), j0 = Math.max(0, j - 1), j1 = Math.min(NZ - 1, j + 1);
-        const gx = (H[j * NX + i1] - H[j * NX + i0]) / (xs[i1] - xs[i0]);
-        const gz = (H[j1 * NX + i] - H[j0 * NX + i]) / (zs[j1] - zs[j0]);
-        const nx = -gx * NORMAL_EXAGGERATION, nz = -gz * NORMAL_EXAGGERATION, L = Math.sqrt(nx * nx + 1 + nz * nz);
-        nrm[k * 3] = nx / L; nrm[k * 3 + 1] = 1 / L; nrm[k * 3 + 2] = nz / L;
-      }
-    }
-    // triangles split into groups: 0 outer (tiled), 1 in-play (main texture), 2 green patch
-    const groups = [[], [], []];
+    const nrm = gridNormals(H, NX, NZ, i => xs[i], j => zs[j]);
+    const groups = [[], []];   // 0 outer (tiled), 1 in-play (baked texture); patch cells are skipped
     for (let j = 0; j < NZ - 1; j++) {
       for (let i = 0; i < NX - 1; i++) {
         const a = j * NX + i, b = a + 1, c = a + NX, d = c + 1;
         const cx = (xs[i] + xs[i + 1]) / 2, cz = (zs[j] + zs[j + 1]) / 2;
-        const gi = (cx > pa.xmin && cx < pa.xmax && cz > pa.zmin && cz < pa.zmax) ? 2 : (cx > pr.xmin && cx < pr.xmax && cz > pr.zmin && cz < pr.zmax) ? 1 : 0;
-        groups[gi].push(a, c, b, b, c, d);
+        if (inPatch(cx, cz)) continue;
+        groups[(cx > pr.xmin && cx < pr.xmax && cz > pr.zmin && cz < pr.zmax) ? 1 : 0].push(a, c, b, b, c, d);
       }
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    geo.setAttribute('uv1', new THREE.BufferAttribute(uv1, 2));
     geo.setAttribute('uv2', new THREE.BufferAttribute(uv2, 2));
-    const all = new Uint32Array(groups[0].length + groups[1].length + groups[2].length);
-    let off = 0;
-    groups.forEach((gr, gi) => { all.set(gr, off); geo.addGroup(off, gr.length, gi); off += gr.length; });
+    const all = new Uint32Array(groups[0].length + groups[1].length);
+    all.set(groups[0], 0); all.set(groups[1], groups[0].length);
+    geo.addGroup(0, groups[0].length, 0); geo.addGroup(groups[0].length, groups[1].length, 1);
     geo.setIndex(new THREE.BufferAttribute(all, 1));
-
-    const outerTex = this.makeOuterTexture();
-    const mainTex = this.makeMainTexture(h);
-    const [greenPlain, greenGrid] = this.makeGreenTextures(h);
-    this.greenTex = { plain: greenPlain, grid: greenGrid };
-    outerTex.channel = 2; greenPlain.channel = 1; greenGrid.channel = 1;
-    this.greenMat = new THREE.MeshStandardMaterial({ map: this.showGrid ? greenGrid : greenPlain, roughness: 0.95 });
-    const mats = [new THREE.MeshStandardMaterial({ map: outerTex, roughness: 1 }), new THREE.MeshStandardMaterial({ map: mainTex, roughness: 0.95 }), this.greenMat];
-    this.terrainMesh = new THREE.Mesh(geo, mats);
+    const outerTex = this.makeOuterTexture(); outerTex.channel = 2;
+    this.buildTimes = { mesh: performance.now() - t0 };
+    const PLACEHOLDER = 0x5aa040;   // flat grass color shown until the worker-painted texture arrives
+    const mainMat = new THREE.MeshStandardMaterial({ color: PLACEHOLDER, roughness: 0.95 });
+    const mpx = Math.max(0.25, Math.max(pr.xmax - pr.xmin, pr.zmax - pr.zmin) / 4096);
+    this.terrainMesh = new THREE.Mesh(geo, [new THREE.MeshStandardMaterial({ map: outerTex, roughness: 1 }), mainMat]);
     this.terrainMesh.receiveShadow = true;
     this.holeGroup.add(this.terrainMesh);
+    this.pickMeshes = [this.terrainMesh];
+
+    // Patch meshes
+    const tp0 = performance.now();
+    const baseH = (x, z) => h.height(x, z);
+    for (const r of rects) {
+      const nx = Math.round((r.xmax - r.xmin) / STEP) * FINE + 1, nz = Math.round((r.zmax - r.zmin) / STEP) * FINE + 1, d = STEP / FINE;
+      const pp = new Float32Array(nx * nz * 3), pu = new Float32Array(nx * nz * 2), PH = new Float64Array(nx * nz);
+      for (let j = 0; j < nz; j++) {
+        for (let i = 0; i < nx; i++) {
+          const k = j * nx + i, x = r.xmin + i * d, z = r.zmin + j * d;
+          let y;
+          const onX = i === 0 || i === nx - 1, onZ = j === 0 || j === nz - 1;
+          if (onZ && i % FINE) { const i0 = i - (i % FINE); const t = (i % FINE) / FINE; y = baseH(r.xmin + i0 * d, z) * (1 - t) + baseH(r.xmin + (i0 + FINE) * d, z) * t; }
+          else if (onX && j % FINE) { const j0 = j - (j % FINE); const t = (j % FINE) / FINE; y = baseH(x, r.zmin + j0 * d) * (1 - t) + baseH(x, r.zmin + (j0 + FINE) * d) * t; }
+          else y = baseH(x, z);
+          PH[k] = y; pp[k * 3] = x; pp[k * 3 + 1] = y; pp[k * 3 + 2] = z;
+          pu[k * 2] = i / (nx - 1); pu[k * 2 + 1] = j / (nz - 1);
+        }
+      }
+      const pidx = new Uint32Array((nx - 1) * (nz - 1) * 6);
+      for (let j = 0, q = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) {
+        const a = j * nx + i, b = a + 1, c = a + nx, e = c + 1;
+        pidx[q++] = a; pidx[q++] = c; pidx[q++] = b; pidx[q++] = b; pidx[q++] = c; pidx[q++] = e;
+      }
+      const pg = new THREE.BufferGeometry();
+      pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
+      pg.setAttribute('normal', new THREE.BufferAttribute(gridNormals(PH, nx, nz, i => r.xmin + i * d, j => r.zmin + j * d), 3));
+      pg.setAttribute('uv', new THREE.BufferAttribute(pu, 2));
+      pg.setIndex(new THREE.BufferAttribute(pidx, 1));
+      const px = Math.max(r.px, Math.max(r.xmax - r.xmin, r.zmax - r.zmin) / 2048);
+      const mat = new THREE.MeshStandardMaterial({ color: PLACEHOLDER, roughness: 0.95 });
+      if (r.green) this.greenMat = mat;
+      paints.push({ area: (r.xmax - r.xmin) * (r.zmax - r.zmin) / (px * px), run: () => this.paintInto(mat, r, px, r.green ? SHADE_GREEN * 0.4 : SHADE_MAIN * 0.3, !!r.green, 0.25,
+        r.green ? (plain, grid) => { this.greenTex = { plain, grid }; mat.map = this.showGrid ? grid : plain; } : null) });
+      const mesh = new THREE.Mesh(pg, mat);
+      mesh.receiveShadow = true;
+      this.holeGroup.add(mesh);
+      this.pickMeshes.push(mesh);
+    }
 
     // Ground plane to the horizon
-    const far = new THREE.Mesh(new THREE.CircleGeometry(4000, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x2f5c2a, roughness: 1 }));
+    const far = new THREE.Mesh(new THREE.CircleGeometry(4000, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x3f7f34, roughness: 1 }));
     far.position.set((xmin + xmax) / 2, farY - 0.05, h.L / 2);
     this.holeGroup.add(far);
 
@@ -241,7 +298,15 @@ export class GolfView {
       this.holeGroup.add(m);
     }
 
+    this.buildTimes.patches = performance.now() - tp0;
+    // Paint textures in workers, biggest first; `ready` resolves when every texture is in.
+    paints.push({ area: (pr.xmax - pr.xmin) * (pr.zmax - pr.zmin) / (mpx * mpx), run: () => this.paintInto(mainMat, pr, mpx, SHADE_MAIN * 0.3, false, 1) });
+    paints.sort((a, b) => b.area - a.area);
+    const tpaint = performance.now();
+    this.ready = Promise.all(paints.map(p => p.run())).then(() => { this.buildTimes.paintAsync = performance.now() - tpaint; });
+    const tt0 = performance.now();
     this.buildTrees(h, xmin, xmax, zmin, zmax);
+    this.buildTimes.trees = performance.now() - tt0;
     this.buildSlopeDots(h);
     this.sky.build(h.seed, new THREE.Vector3((xmin + xmax) / 2, 0, h.L / 2), h.wind);
     this.buildMs = performance.now() - t0;
@@ -270,28 +335,46 @@ export class GolfView {
         list.push(decorTree(rand, x, z, h.height(x, z)));
       }
     }
-    const pines = list.filter(t => t.type === 'pine'), rounds = list.filter(t => t.type !== 'pine');
-    const trunkGeo = new THREE.CylinderGeometry(1, 1, 1, 7).translate(0, 0.5, 0);
-    const coneGeo = new THREE.ConeGeometry(1, 1, 9).translate(0, 0.5, 0);
-    const blobGeo = new THREE.IcosahedronGeometry(1, 1);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 1 });
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
-    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
+    // Instanced, 3 variants each of pine and deciduous; geometry is unit-sized so each instance
+    // is scaled to exactly the sim's collision volume.
+    const leafTex = this.leafTex || (this.leafTex = leafTexture());
+    const leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: leafTex, roughness: 0.85, side: THREE.DoubleSide });
+    const needleMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: this.needleTex || (this.needleTex = needleTexture()), roughness: 0.9, side: THREE.DoubleSide });
+    const barkMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
+    // LOD: detailed meshes for the in-play trees (they can be right next to the camera), cheap
+    // ones for the decorative out-of-bounds forest.
+    const geos = this.treeGeos || (this.treeGeos = {
+      pine: [11, 22, 33].map(s => pineCrown(s, 0)), round: [44, 55, 66].map(s => roundCrown(s, 0)),
+      pineLo: [11, 22, 33].map(s => pineCrown(s, 1)), roundLo: [44, 55, 66].map(s => roundCrown(s, 1)),
+      trunk: trunkGeometry(false, 7),
+    });
+    const m4 = new THREE.Matrix4(), col = new THREE.Color(), up = new THREE.Vector3(0, 1, 0);
     const mk = (geo, mat, n) => { const im = new THREE.InstancedMesh(geo, mat, Math.max(1, n)); im.count = n; im.castShadow = true; im.receiveShadow = true; this.holeGroup.add(im); return im; };
-    const pt = mk(trunkGeo, trunkMat, pines.length), pc = mk(coneGeo, leafMat, pines.length);
-    pines.forEach((t, i) => {
-      m4.compose(new THREE.Vector3(t.x, t.y0 - 0.3, t.z), q, new THREE.Vector3(t.trunkR, t.crownBase + 1.3, t.trunkR)); pt.setMatrixAt(i, m4);
-      m4.compose(new THREE.Vector3(t.x, t.y0 + t.crownBase, t.z), q, new THREE.Vector3(t.crownR, t.crownTop - t.crownBase, t.crownR)); pc.setMatrixAt(i, m4);
-      col.setHSL(0.36 + (hashf(t.x, t.z) - 0.5) * 0.05, 0.55, 0.2 + hashf(t.z, t.x) * 0.08); pc.setColorAt(i, col);
+    const trunks = mk(geos.trunk, barkMat, list.length);
+    const buckets = { pine: [[], [], []], round: [[], [], []], pineLo: [[], [], []], roundLo: [[], [], []] };
+    const nPlay = h.trees.length;
+    list.forEach((t, i) => {
+      const kind = t.type === 'pine' ? 'pine' : 'round';
+      buckets[kind + (i < nPlay ? '' : 'Lo')][Math.floor(hashf(t.x * 1.3, t.z * 0.7) * 3) % 3].push(t);
+      const trunkH = kind === 'pine' ? t.crownBase + 1.3 : t.crownY + 0.3;
+      m4.compose(new THREE.Vector3(t.x, t.y0 - 0.3, t.z), new THREE.Quaternion(), new THREE.Vector3(t.trunkR, trunkH, t.trunkR));
+      trunks.setMatrixAt(i, m4);
     });
-    const rt = mk(trunkGeo, trunkMat, rounds.length), rc = mk(blobGeo, leafMat, rounds.length);
-    rounds.forEach((t, i) => {
-      m4.compose(new THREE.Vector3(t.x, t.y0 - 0.3, t.z), q, new THREE.Vector3(t.trunkR, t.crownY + 0.3, t.trunkR)); rt.setMatrixAt(i, m4);
-      const qq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), hashf(t.x, t.z) * 6);
-      m4.compose(new THREE.Vector3(t.x, t.y0 + t.crownY, t.z), qq, new THREE.Vector3(t.crownR, t.crownRy, t.crownR)); rc.setMatrixAt(i, m4);
-      col.setHSL(0.27 + (hashf(t.x, t.z) - 0.5) * 0.08, 0.5, 0.28 + hashf(t.z, t.x) * 0.1); rc.setColorAt(i, col);
-    });
-    for (const im of [pc, rc]) if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    for (const kind of ['pine', 'round', 'pineLo', 'roundLo']) {
+      const isPine = kind.startsWith('pine');
+      buckets[kind].forEach((arr, v) => {
+        const im = mk(geos[kind][v], isPine ? needleMat : leafMat, arr.length);
+        arr.forEach((t, i) => {
+          const q = new THREE.Quaternion().setFromAxisAngle(up, hashf(t.x, t.z) * 6.28);
+          if (isPine) m4.compose(new THREE.Vector3(t.x, t.y0 + t.crownBase, t.z), q, new THREE.Vector3(t.crownR, t.crownTop - t.crownBase, t.crownR));
+          else m4.compose(new THREE.Vector3(t.x, t.y0 + t.crownY, t.z), q, new THREE.Vector3(t.crownR, t.crownRy, t.crownR));
+          im.setMatrixAt(i, m4);
+          const r = hashf(t.z, t.x), b = 0.92 + r * 0.25;
+          col.setRGB(b * (0.95 + r * 0.1), b, b * (0.9 + (1 - r) * 0.15)); im.setColorAt(i, col);
+        });
+        if (im.instanceColor) im.instanceColor.needsUpdate = true;
+      });
+    }
   }
 
   buildSlopeDots(h) {
@@ -317,86 +400,33 @@ export class GolfView {
     const x = c.getContext('2d'), img = x.createImageData(S, S);
     for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
       const n = hashf(i, j) * 0.1 + valueNoise(i / 16, j / 16) * 0.15 - 0.12, o = (j * S + i) * 4;
-      img.data[o] = c255(0.18 * (1 + n)); img.data[o + 1] = c255(0.38 * (1 + n)); img.data[o + 2] = c255(0.14 * (1 + n)); img.data[o + 3] = 255;
+      img.data[o] = c255(0.23 * (1 + n)); img.data[o + 1] = c255(0.5 * (1 + n)); img.data[o + 2] = c255(0.16 * (1 + n)); img.data[o + 3] = 255;
     }
     x.putImageData(img, 0, 0);
     const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.flipY = false;
     return t;
   }
 
-  /** Sample heights on a regular grid (for baked shading). */
-  heightGrid(h, x0, z0, x1, z1, step) {
-    const nx = Math.ceil((x1 - x0) / step) + 1, nz = Math.ceil((z1 - z0) / step) + 1;
-    const H = new Float64Array(nx * nz);
-    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) H[j * nx + i] = h.height(x0 + i * step, z0 + j * step);
-    return { H, nx, nz, x0, z0, step };
+  /** RGBA pixel array -> sRGB DataTexture with mipmaps. */
+  pixelsToTex(W, H, data) {
+    const t = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+    t.flipY = false; t.colorSpace = THREE.SRGBColorSpace;
+    t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
+    t.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    t.needsUpdate = true;
+    return t;
   }
 
-  /** Paint one texture over rect r with pixel size px. Returns [plainCanvas, gridCanvas?]. */
-  paint(h, r, px, shadeAmt, withGrid) {
-    const W = Math.round((r.xmax - r.xmin) / px), Ht = Math.round((r.zmax - r.zmin) / px);
-    const hg = this.heightGrid(h, r.xmin - 1, r.zmin - 1, r.xmax + 1, r.zmax + 1, Math.max(px, withGrid ? 0.25 : 1));
-    const { H, nx, step } = hg;
-    const mk = () => { const c = document.createElement('canvas'); c.width = W; c.height = Ht; return c; };
-    const c1 = mk(), c2 = withGrid ? mk() : null;
-    const ctx1 = c1.getContext('2d'), img1 = ctx1.createImageData(W, Ht), a = img1.data;
-    const ctx2 = c2?.getContext('2d'), img2 = ctx2?.createImageData(W, Ht), b = img2?.data;
-    const lx = SUN_DIR.x, ly = SUN_DIR.y, lz = SUN_DIR.z;
-    const g = h.green;
-    let hmin = Infinity, hmax = -Infinity;
-    for (let k = 0; k < 400; k++) { const th = k * 0.7, rr = (k / 400) * g.R0; const y = h.height(g.x + Math.cos(th) * rr, g.z + Math.sin(th) * rr); hmin = Math.min(hmin, y); hmax = Math.max(hmax, y); }
-    const hspan = Math.max(0.2, hmax - hmin);
-    for (let j = 0; j < Ht; j++) {
-      const z = r.zmin + (j + 0.5) * px;
-      for (let i = 0; i < W; i++) {
-        const x = r.xmin + (i + 0.5) * px;
-        const fu = (x - hg.x0) / step, fv = (z - hg.z0) / step;
-        const iu = Math.min(nx - 2, Math.floor(fu)), iv = Math.min(hg.nz - 2, Math.floor(fv)), tu = fu - iu, tv = fv - iv, k0 = iv * nx + iu;
-        const h00 = H[k0], h10 = H[k0 + 1], h01 = H[k0 + nx], h11 = H[k0 + nx + 1];
-        const y = h00 * (1 - tu) * (1 - tv) + h10 * tu * (1 - tv) + h01 * (1 - tu) * tv + h11 * tu * tv;
-        const gx = ((h10 - h00) * (1 - tv) + (h11 - h01) * tv) / step, gz = ((h01 - h00) * (1 - tu) + (h11 - h10) * tu) / step;
-        const surf = h.surface(x, z);
-        const n = hashf(i, j) * 0.06 - 0.03;
-        const mott = valueNoise(x * 0.9, z * 0.9) * 0.08 + valueNoise(x * 4, z * 4) * 0.04 - 0.06;
-        let cr, cg, cb, amt = shadeAmt;
-        switch (surf) {
-          case 'green': {
-            const stripe = (Math.floor((x * 0.8 + z * 0.6) / 1.6) & 1) ? 0.035 : -0.035, k = 1 + stripe + n * 0.5 + mott * 0.6;
-            const hn = Math.min(1, Math.max(0, (y - hmin) / hspan));
-            cr = (0.17 + 0.25 * hn) * k; cg = (0.54 + 0.22 * hn) * k; cb = (0.34 - 0.14 * hn) * k; amt = shadeAmt * 1.25; break;
-          }
-          case 'fringe': { const k = 1 + n + mott; cr = 0.25 * k; cg = 0.56 * k; cb = 0.21 * k; break; }
-          case 'fairway': case 'tee': {
-            const stripe = (Math.floor(z / (surf === 'tee' ? 1.5 : 8)) & 1) ? 0.05 : -0.05, k = 1 + stripe + n * 0.6 + mott * 0.7;
-            cr = 0.33 * k; cg = 0.66 * k; cb = 0.24 * k; break;
-          }
-          case 'sand': { const k = 1 + n * 2 + mott * 0.6; cr = 0.88 * k; cg = 0.79 * k; cb = 0.57 * k; amt = shadeAmt * 0.8; break; }
-          case 'water': cr = 0.16; cg = 0.27; cb = 0.2; break;
-          default: { const k = 1 + n * 2.2 + mott * 1.6; cr = 0.2 * k; cg = 0.47 * k; cb = 0.14 * k; if (surf === 'oob') { cr *= 0.92; cg *= 0.92; cb *= 0.92; } }
-        }
-        const ex = -gx * SHADE_MAIN, ez = -gz * SHADE_MAIN, el = Math.sqrt(ex * ex + 1 + ez * ez);
-        const shade = (ex * lx + ly + ez * lz) / el - ly;
-        const m = Math.min(1.6, Math.max(surf === 'green' || surf === 'fringe' ? 0.42 : 0.62, 1 + amt * shade));
-        cr *= m; cg *= m; cb *= m;
-        if (surf === 'green' || surf === 'fringe') {
-          const f = y / CONTOUR_STEP, gl = Math.sqrt(gx * gx + gz * gz);
-          const dm = Math.abs(f - Math.round(f)) * CONTOUR_STEP / Math.max(gl, 1e-4);
-          if (dm < 0.055) { const c = 1 - 0.12 * (1 - (dm / 0.055) ** 2); cr *= c; cg *= c; cb *= c; }
-        }
-        const o = (j * W + i) * 4;
-        a[o] = c255(cr); a[o + 1] = c255(cg); a[o + 2] = c255(cb); a[o + 3] = 255;
-        if (b) {
-          b[o] = a[o]; b[o + 1] = a[o + 1]; b[o + 2] = a[o + 2]; b[o + 3] = 255;
-          if (surf === 'green' || surf === 'fringe') {
-            const fx = Math.abs(x - Math.round(x)), fz = Math.abs(z - Math.round(z));
-            if (fx < px * 0.55 || fz < px * 0.55) { b[o] = c255(cr * 0.72 + 0.26); b[o + 1] = c255(cg * 0.72 + 0.26); b[o + 2] = c255(cb * 0.72 + 0.26); }
-          }
-        }
-      }
-    }
-    ctx1.putImageData(img1, 0, 0);
-    if (ctx2) ctx2.putImageData(img2, 0, 0);
-    return [c1, c2];
+  /** Queue a texture paint; when done, assign to mat (and optional grid variant). */
+  paintInto(mat, r, px, shadeAmt, withGrid, hstep, onDone) {
+    const h = this.game.hole, gen = this.buildGen;
+    const job = { r: { xmin: r.xmin, xmax: r.xmax, zmin: r.zmin, zmax: r.zmax }, px, shadeAmt, withGrid, hstep, light: { x: SUN_DIR.x, y: SUN_DIR.y, z: SUN_DIR.z } };
+    return this.pool.run(this.paramsKey, this.paramsClean, job, h).then(o => {
+      if (gen !== this.buildGen) return;   // a newer hole replaced this one
+      const plain = this.pixelsToTex(o.W, o.H, o.a), grid = o.b ? this.pixelsToTex(o.W, o.H, o.b) : null;
+      if (onDone) onDone(plain, grid); else mat.map = plain;
+      mat.color.set(0xffffff); mat.needsUpdate = true;
+    });
   }
 
   toTex(c) {
@@ -406,21 +436,10 @@ export class GolfView {
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     return t;
   }
-  makeMainTexture(h) {
-    const r = this.playRect;
-    const px = Math.max(0.25, Math.max(r.xmax - r.xmin, r.zmax - r.zmin) / 4096);
-    return this.toTex(this.paint(h, r, px, SHADE_MAIN * 0.3, false)[0]);
-  }
-  makeGreenTextures(h) {
-    const r = this.patch, px = (r.xmax - r.xmin) / 1280;   // ~4.7 cm/px, like the putting game
-    const [a, b] = this.paint(h, r, px, SHADE_GREEN * 0.4, true);
-    return [this.toTex(a), this.toTex(b)];
-  }
 
   setGrid(on) {
     this.showGrid = on;
-    this.greenMat.map = on ? this.greenTex.grid : this.greenTex.plain;
-    this.greenMat.needsUpdate = true;
+    if (this.greenTex) { this.greenMat.map = on ? this.greenTex.grid : this.greenTex.plain; this.greenMat.needsUpdate = true; }
   }
 
   /** Cheat-mode preview path (game.preview() result) or null. */
@@ -586,25 +605,59 @@ export class GolfView {
   pick(nx, ny) {
     const rc = new THREE.Raycaster();
     rc.setFromCamera(new THREE.Vector2(nx, ny), this.camera);
-    const hit = rc.intersectObject(this.terrainMesh, false)[0];
+    const hit = rc.intersectObjects(this.pickMeshes, false)[0];
     return hit ? { x: hit.point.x, z: hit.point.z } : null;
   }
 }
 
-/** Non-uniform axis: 1.5 m spacing in play, 0.3 m in [f0,f1], growing spacing outside to +-margin. */
-function axis(min, max, f0, f1, margin) {
-  const out = [];
-  let v = min, s = 1.5;
-  const lo = [];
+/** Small pool of module workers running paintPixels (falls back to the main thread). */
+class PaintPool {
+  constructor(n) {
+    this.jobs = new Map(); this.next = 1; this.queue = []; this.idle = [];
+    try {
+      for (let i = 0; i < n; i++) {
+        const w = new Worker(new URL('./paint.worker.js', import.meta.url), { type: 'module' });
+        w.onmessage = e => { const j = this.jobs.get(e.data.id); this.jobs.delete(e.data.id); this.idle.push(w); this.pump(); j.resolve(e.data); };
+        w.onerror = e => { console.error('paint worker error', e.message); };
+        this.idle.push(w);
+      }
+    } catch (err) { this.idle = []; }
+    this.workers = this.idle.length;
+  }
+  run(key, params, job, hole) {
+    if (!this.workers) { const o = paintPixels(hole, job.r, job.px, job.shadeAmt, job.withGrid, job.hstep, job.light); return Promise.resolve(o); }
+    return new Promise(resolve => { const id = this.next++; this.jobs.set(id, { resolve }); this.queue.push({ id, key, params, job }); this.pump(); });
+  }
+  pump() { while (this.idle.length && this.queue.length) this.idle.pop().postMessage(this.queue.shift()); }
+}
+
+/** Axis: uniform `step` spacing over [min, max] (min/max are grid lines), growing spacing outside to +-margin. */
+function axis(min, max, step, margin) {
+  const out = [], lo = [];
+  let s = step;
   for (let u = min - s; u > min - margin; u -= s, s *= 1.09) lo.push(u);
   out.push(...lo.reverse());
-  for (v = min; v < f0; v += 1.5) out.push(v);
-  for (v = f0; v < f1; v += 0.3) out.push(v);
-  for (v = f1; v < max; v += 1.5) out.push(v);
-  out.push(max);
-  s = 1.5;
+  const n = Math.round((max - min) / step);
+  for (let i = 0; i <= n; i++) out.push(min + i * step);
+  s = step;
   for (let u = max + s; u < max + margin; u += s, s *= 1.09) out.push(u);
   return out;
+}
+
+/** Exaggerated normals for a (possibly non-uniform) height grid. */
+function gridNormals(H, NX, NZ, X, Z) {
+  const nrm = new Float32Array(NX * NZ * 3);
+  for (let j = 0; j < NZ; j++) {
+    for (let i = 0; i < NX; i++) {
+      const k = j * NX + i;
+      const i0 = Math.max(0, i - 1), i1 = Math.min(NX - 1, i + 1), j0 = Math.max(0, j - 1), j1 = Math.min(NZ - 1, j + 1);
+      const gx = (H[j * NX + i1] - H[j * NX + i0]) / (X(i1) - X(i0));
+      const gz = (H[j1 * NX + i] - H[j0 * NX + i]) / (Z(j1) - Z(j0));
+      const nx = -gx * NORMAL_EXAGGERATION, nz = -gz * NORMAL_EXAGGERATION, L = Math.sqrt(nx * nx + 1 + nz * nz);
+      nrm[k * 3] = nx / L; nrm[k * 3 + 1] = 1 / L; nrm[k * 3 + 2] = nz / L;
+    }
+  }
+  return nrm;
 }
 
 function decorTree(rand, x, z, y0) {
@@ -622,16 +675,4 @@ function pinTexture() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
-function c255(v) { return Math.max(0, Math.min(255, Math.round(v * 255))); }
-function hashf(i, j) {
-  let h = (Math.floor(i * 1000) * 374761393 + Math.floor(j * 1000) * 668265263) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-function valueNoise(x, z) {
-  const i = Math.floor(x), j = Math.floor(z), fx = x - i, fz = z - j;
-  const sx = fx * fx * (3 - 2 * fx), sz = fz * fz * (3 - 2 * fz);
-  const a = hashf(i, j), b = hashf(i + 1, j), c = hashf(i, j + 1), d = hashf(i + 1, j + 1);
-  return a + (b - a) * sx + (c - a) * sz + (a - b - c + d) * sx * sz;
-}
 export { radialTexture };

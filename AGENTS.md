@@ -31,8 +31,13 @@ Screenshots: `scripts/shot.mjs` starts its own server on a random port, opens th
 in headless Chrome (system Chrome via Playwright `channel: 'chrome'`, falling back to bundled
 Chromium; SwiftShader WebGL), runs each `--do EXPR` as `window.__golf.EXPR` in order, saves a PNG
 and prints final state JSON plus page `errors` (must be `[]`). Flags: `--page --seed --mode
-normal|cheat --cam auto|overhead --grid 0|1 --hud 0|1 --width --height --out`. Look at the PNG
-with your image tool. `shots/` is gitignored scratch. Hole build takes ~1.2 s in SwiftShader.
+normal|cheat --cam auto|overhead --grid 0|1 --hud 0|1 --width --height --out`, and
+`--eval CODE` (arbitrary JS with `g = window.__golf`, interleaved in order with `--do`), e.g.
+`--eval "g.view.sun.castShadow = false; g.render()"` — great for isolating rendering artifacts by
+hiding things one at a time. The tool awaits `__golf.whenReady()` after load and after every
+step, so worker-painted textures are always final in the PNG. `shots/` is gitignored scratch.
+Close-ups: `--do "lookAtHazard(0)"` (bunker 0), `--do "lookAtHazard(0, 'pond', 6)"`,
+`--do "placeBall(x, z, lookX, lookZ)"`.
 
 ## Layout
 
@@ -48,8 +53,9 @@ src/golf/sim/         full-hole sim (pure)
   ball.js             3D ball: airStep (drag+lift), bounces, rolling, trees, cup; stepShot/simulateShot
   game.js             GolfGame state machine, auto club/aim/power, penalties, log/replay
   bot.js              brute-force shot search (tests, autoShot/playHole)
-src/golf/render/      view.js (terrain, textures, water, trees, lines, cameras), sky.js (dome,
-                      sun, toon clouds, horizon rings)
+src/golf/render/      view.js (terrain + patches, water, lines, cameras), sky.js (dome, sun,
+                      toon clouds, horizon rings), trees.js (procedural tree meshes),
+                      paint.js (DOM-free texture painter) + paint.worker.js (runs it in workers)
 src/golf/main.js      loop, input, HUD, minimap, window.__golf
 src/render/view.js, src/main.js   putting game view/entry
 scripts/              serve.mjs, shot.mjs, golf.mjs, sim.mjs
@@ -125,7 +131,8 @@ URL: `?seed=N&mode=normal&paused=1&cam=overhead&grid=0&hud=0` (mode defaults to 
 `playHole()` · `setClub(c)` · `setAim(a)` · `aimAtHole()` · `setPower(p)` · `setMode(m)` ·
 `newHole(seed?)` · `dispatch(a)` · `preview(...)` · `state()` · `setCamera('auto'|'overhead', zoom)`
 · `setGrid(b)` · `setHud(b)` · `advanceVisuals(secs)` (clouds/flag only) · `screenshot()` ·
-`render()` · `pause()/resume()` · `buildMs()`. Also `game`, `view`, `CLUBS` objects for poking.
+`render()` · `pause()/resume()` · `buildMs()` · `whenReady()` · `placeBall(x, z, lookX?, lookZ?)`
+· `lookAtHazard(i, 'bunker'|'pond', dist)`. Also `game`, `view`, `CLUBS` objects for poking.
 The putting page has the same style API (`putt`, `autoPutt`, `newGreen`, …).
 
 Keys (golf): ←/→ aim (Shift fine), ↑/↓ power (cheat), Q/E or [ ] club, Z/X draw/fade (±25%,
@@ -145,16 +152,36 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
 
 ## Rendering notes / gotchas
 
-- Terrain is one tensor-product grid with **non-uniform spacing**: 0.3 m in the green patch strip,
-  1.5 m in play, growing to 320 m outside, outer ring skirted down to a horizon ground disk.
-  Three material groups chosen per triangle: outer (tiled, `uv2`), in-play (one baked texture,
-  `uv`), green patch (hi-res texture + grid variant, `uv1`; `texture.channel` selects the uv set).
-- Baked textures (`paint()`) = surface colors + hillshade from `SUN_DIR` + green height tint +
-  contours. Readability constants at the top of view.js (`NORMAL_EXAGGERATION`, `SHADE_*`).
+- Terrain = a base grid (uniform 1.5 m in play, growing spacing to 320 m outside, outer ring
+  skirted down to a horizon ground disk; groups: outer tiled `uv2` / in-play baked `uv`) plus
+  **hi-res patches** (0.25 m geometry, ~4 cm/px texture; ponds 8 cm) around the green, every
+  bunker and every pond. Patches are snapped to base grid lines, merged when overlapping, the base
+  cells inside are skipped, and patch border vertices are linearly interpolated from the base
+  vertices so the seam is watertight (no T-junction cracks). This is what keeps bunker bowls and
+  edges crisp — the old single 0.25 m/px texture looked pixelated.
+- Textures are painted by `paint.js` in a pool of module Web Workers (`PaintPool`; falls back to
+  the main thread). Materials show a flat grass placeholder until each texture arrives;
+  `view.ready` / `__golf.whenReady()` resolves when all are in. Workers can't see the import map:
+  everything they import must be relative and three.js-free. Stale results (new hole started)
+  are dropped via `buildGen`.
+- Baked textures = surface colors + hillshade + green height tint + contours + bunker grass lip
+  and sand rim + anti-aliased fairway edge. Readability constants: `NORMAL_EXAGGERATION`
+  (view.js), `SHADE_*`, `CONTOUR_STEP` (paint.js).
+- Lighting: `LIGHT_DIR` (≈35° up) drives the sun light + baked hillshade; `SUN_DIR` (≈14° up)
+  only places the visible sun disk so it's in frame from the tee. With light at 14° the tree
+  shadows were huge streaks. NeutralToneMapping, exposure 1.15, shadow intensity 0.6, bright
+  hemisphere — the user asked for a cheerful look; keep it bright.
+- Trees (trees.js): unit-space geometry scaled per instance to the exact collision volumes.
+  Pines = 7 whorls × 2 offset star-shaped drooping cones + needle texture; deciduous = cluster of
+  noise-displaced spheres with vertex AO + leaf-speckle texture. 3 variants each, picked by hash.
+  **LOD**: full detail only for the ~200 in-play `hole.trees`; the decorative OOB forest uses
+  low-detail variants (keeps it ~2.2M tris/frame incl. shadows instead of ~5.7M).
 - The horizon ground disk must sit below the lowest terrain (it once poked through a valley and
   looked like a grey "pond"). Raycast debugging (see git history) found it quickly.
 - Water needs an env map (PMREM of the sky dome, `Sky.envMap`) or it looks grey at grazing angles.
 - Lines are `Line2`/`LineMaterial` (pixel widths); update `resolution` on resize.
+- Headless SwiftShader is slow at ~2M tris: the realtime loop runs at a few fps there, so browser
+  tests must wait on sim state (e.g. meter value) rather than wall-clock delays.
 - Ball, markers and halo are scaled up with camera distance (ball ×2.5+ in flight) so they're
   trackable. `logarithmicDepthBuffer` is on (near 0.05, far 9000).
 - Wind HUD arrow is drawn relative to the camera (up = blowing away from you); in overhead mode

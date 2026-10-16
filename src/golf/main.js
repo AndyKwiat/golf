@@ -308,6 +308,14 @@ window.__golf = {
   playHole() { botPlayHole(game); handleEvents(); draw(1, DT, true); return game.snapshot(); },
   preview(aim, power, club, curve) { const r = game.preview(aim, power, club, curve); return { result: r.result, end: r.end, landing: r.landing, ticks: r.ticks, treeHits: r.treeHits }; },
   state() { return game.snapshot(); },
+  /** Drop the ball at (x, z), optionally aiming at (lookX, lookZ). Great for screenshots of a spot. */
+  placeBall(x, z, lookX, lookZ) { game.dispatch({ type: 'placeBall', x, z, lookX, lookZ }); return this.step(1); },
+  /** Place the ball `dist` m short of bunker i (or pond i with kind='pond'), looking at it. */
+  lookAtHazard(i = 0, kind = 'bunker', dist = 9) {
+    const hz = (kind === 'pond' ? game.hole.ponds : game.hole.bunkers)[i];
+    const dx = hz.x - game.ball.x, dz = hz.z - game.ball.z, L = Math.hypot(dx, dz) || 1, r = hz.R0 + dist;
+    return this.placeBall(hz.x - dx / L * r, hz.z - dz / L * r, hz.x, hz.z);
+  },
   setCamera(mode, zoom = 1) { view.camMode = mode; view.zoom = zoom; draw(1, 0, true); },
   setGrid(on) { view.setGrid(on); draw(1, 0, true); },
   setHud(on) { $('hud').classList.toggle('hidden', !on); },
@@ -316,5 +324,7 @@ window.__golf = {
   screenshot() { draw(1, 0, true); return view.renderer.domElement.toDataURL('image/png'); },
   render() { draw(1, 0, true); },
   buildMs() { return view.buildMs; },
+  /** Resolves when the current hole's textures have finished painting (await before screenshots). */
+  whenReady() { return view.ready.then(() => { draw(1, 0, true); return true; }); },
 };
 window.__golfReady = true;

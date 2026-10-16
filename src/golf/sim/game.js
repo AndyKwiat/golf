@@ -210,6 +210,12 @@ export class GolfGame {
         }
         break;
       case 'swingPress': this._swingPress(); break;
+      case 'placeBall':   // debug/agent helper: drop the ball anywhere (logged, so replays still work)
+        if (this.phase === 'aim' || this.phase === 'holed') {
+          this._placeBall({ x: a.x, z: a.z }); this.phase = 'aim'; this._newLie();
+          if (a.lookX !== undefined) this.aim = atan2(a.lookZ - a.z, a.lookX - a.x);
+        }
+        break;
       default: throw new Error(`unknown action ${a.type}`);
     }
   }

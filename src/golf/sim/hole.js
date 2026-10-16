@@ -126,11 +126,11 @@ export class Hole {
     }
     if (!skipPonds) {
       for (const p of this.ponds) {
-        if (Math.abs(x - p.x) > p._bound + 3 || Math.abs(z - p.z) > p._bound + 3) continue;
+        if (Math.abs(x - p.x) > p._bound + 6 || Math.abs(z - p.z) > p._bound + 6) continue;
         const d = blobDist(p, x, z);
-        if (d < 1.6) {
+        if (d < 5) {   // shore: blend from the pond bed up to the terrain over ~5 m (gentle banks)
           const hp = p.level - 0.06 - 1.6 * smoothstep(0, 4, -d);
-          h = hp + (h - hp) * smoothstep(-0.3, 1.6, d);
+          h = hp + (h - hp) * smoothstep(-0.3, 5, d);
         }
       }
     }

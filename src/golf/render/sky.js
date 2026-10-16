@@ -4,8 +4,10 @@ import * as THREE from 'three';
 import { mulberry32 } from '../../sim/rng.js';
 
 export const SUN_DIR = new THREE.Vector3(0.42, 0.24, 0.87).normalize();  // ahead-left of the tee, low enough to be in view
-export const HORIZON = new THREE.Color(0xcfe6f5);
-const ZENITH = new THREE.Color(0x3f8fdc);
+// Light direction: same azimuth as the visible sun but higher, so shadows stay short and friendly.
+export const LIGHT_DIR = new THREE.Vector3(0.42, 0.68, 0.87).normalize();
+export const HORIZON = new THREE.Color(0xe2f1fc);
+const ZENITH = new THREE.Color(0x3d9cf0);
 
 export class Sky {
   constructor(scene) {
@@ -81,9 +83,9 @@ export class Sky {
     }
 
     // Horizon layers: far mountains (with snow), mid hills, near tree line
-    this.horizon.add(ring(center, 2900, 256, rand, 220, 650, 0x8193b5, 0xb9c6dc, true));
-    this.horizon.add(ring(center, 1900, 192, rand, 70, 230, 0x6f9686, 0xa9c1bd, false));
-    this.horizon.add(ring(center, 900, 256, rand, 18, 38, 0x2f5a3a, 0x5d7f6a, false, true));
+    this.horizon.add(ring(center, 2900, 256, rand, 220, 650, 0x93a9cf, 0xd2def0, true));
+    this.horizon.add(ring(center, 1900, 192, rand, 70, 230, 0x7fb08f, 0xc0d8cc, false));
+    this.horizon.add(ring(center, 900, 256, rand, 18, 38, 0x3f7a45, 0x7aa585, false, true));
   }
 
   /** Prefiltered sky environment map (for water reflections). */

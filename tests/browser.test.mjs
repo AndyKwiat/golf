@@ -81,9 +81,16 @@ test('golf page boots, matches the node sim exactly, and plays a hole', async ()
 
     // normal-mode swing through real key presses
     await page.evaluate(() => { window.__golf.setMode('normal'); window.__golf.resume(); });
-    for (const wait of [600, 350, 0]) { await page.keyboard.press('Space'); if (wait) await page.waitForTimeout(wait); }
-    await page.waitForFunction(() => window.__golf.state().phase === 'moving' || window.__golf.state().strokes >= 2, null, { timeout: 5000 });
+    // press on sim state, not wall-clock delays (headless SwiftShader renders slowly)
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => { const s = window.__golf.state(); return s.swing && s.swing.value > 0.3; }, null, { timeout: 60000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => { const s = window.__golf.state(); return s.swing && s.swing.stage === 'accuracy' && s.swing.value < 0.1; }, null, { timeout: 60000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => window.__golf.state().phase !== 'swing', null, { timeout: 60000 });
     await page.evaluate(() => window.__golf.pause());
+    const st2 = await page.evaluate(() => window.__golf.state());
+    assert.equal(st2.strokes, 2, 'keyboard swing took the second shot');
     const fin = await page.evaluate(() => { window.__golf.setMode('cheat'); return window.__golf.playHole(); });
     assert.equal(fin.phase, 'holed');
     assert.deepEqual(errors, []);

@@ -19,9 +19,11 @@ export class View {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x9fd3f5);
+    this.scene.background = new THREE.Color(0xa9dcfb);
     this.scene.fog = new THREE.Fog(0x9fd3f5, 45, 110);
 
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.02, 400);
@@ -31,14 +33,14 @@ export class View {
     this.camPos = new THREE.Vector3(0, 10, 10);
     this.camLook = new THREE.Vector3();
 
-    const hemi = new THREE.HemisphereLight(0xdff2ff, 0x3a5a2a, 0.55);
+    const hemi = new THREE.HemisphereLight(0xf2f9ff, 0x7aa858, 1.3);
     this.scene.add(hemi);
     // Cool fill light from the opposite side so slopes facing away from the sun read as bluish.
-    const fill = new THREE.DirectionalLight(0x9cc2ff, 0.9);
+    const fill = new THREE.DirectionalLight(0xd2e4ff, 0.7);
     fill.position.set(-10, 6, -8);
     this.scene.add(fill);
     // Low, warm raking sun: strong light/dark contrast between opposing slopes.
-    this.sun = new THREE.DirectionalLight(0xffeccc, 2.9);
+    this.sun = new THREE.DirectionalLight(0xfff5e2, 3.0);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(1024, 1024);
     const sc = this.sun.shadow.camera;
