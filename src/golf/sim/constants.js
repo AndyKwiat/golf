@@ -16,23 +16,25 @@ export const KL = 0.0191;
 export const SPIN_DECAY = 5;            // seconds (spin/lift e-folding time)
 
 // Ground interaction per surface:
-//  roll: rolling resistance mu (decel = mu g);  e: bounce restitution (normal);  tf: tangential speed lost per bounce
+//  roll: rolling resistance mu (decel = mu g)   e: bounce restitution (normal)
+//  tf: tangential speed lost per bounce          grip: how much backspin bites on landing
+// Speeds: green is fastest (putting), fairway ~4x slower, rough ~13x slower.
 export const SURF = {
-  tee:     { roll: 0.10, e: 0.34, tf: 0.25 },
-  fairway: { roll: 0.10, e: 0.32, tf: 0.28 },
-  rough:   { roll: 0.30, e: 0.18, tf: 0.55 },
-  fringe:  { roll: 0.16, e: 0.28, tf: 0.35 },
-  green:   { roll: 0.055, e: 0.24, tf: 0.35 },
-  sand:    { roll: 1.20, e: 0.04, tf: 0.85 },
-  water:   { roll: 5, e: 0, tf: 1 },
-  oob:     { roll: 0.30, e: 0.18, tf: 0.55 },
+  tee:     { roll: 0.24, e: 0.25, tf: 0.45, grip: 2.0 },
+  fairway: { roll: 0.24, e: 0.25, tf: 0.45, grip: 2.0 },
+  rough:   { roll: 0.70, e: 0.12, tf: 0.75, grip: 0.5 },
+  fringe:  { roll: 0.20, e: 0.22, tf: 0.50, grip: 2.5 },
+  green:   { roll: 0.055, e: 0.22, tf: 0.45, grip: 3.2 },
+  sand:    { roll: 1.20, e: 0.04, tf: 0.85, grip: 0.5 },
+  water:   { roll: 5, e: 0, tf: 1, grip: 0 },
+  oob:     { roll: 0.70, e: 0.12, tf: 0.75, grip: 0.5 },
 };
 export const BOUNCE_TO_ROLL = 1.2;      // m/s: below this rebound speed the ball starts rolling
 
 // Launch modifiers by lie: speed multiplier and spin multiplier (wedges get a better sand factor)
 export const LIE = {
   tee: { speed: 1, spin: 1 }, fairway: { speed: 1, spin: 1 }, fringe: { speed: 0.97, spin: 0.9 },
-  green: { speed: 0.97, spin: 0.9 }, rough: { speed: 0.88, spin: 0.5 }, sand: { speed: 0.72, spin: 0.7, wedgeSpeed: 0.9 },
+  green: { speed: 0.97, spin: 0.9 }, rough: { speed: 0.85, spin: 0.5 }, sand: { speed: 0.72, spin: 0.7, wedgeSpeed: 0.9 },
 };
 
 export const PUTT_MAX_FLAT = 30;        // putter: power 1 rolls 30 m on flat green

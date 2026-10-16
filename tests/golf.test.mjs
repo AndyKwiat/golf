@@ -12,6 +12,7 @@ function flatHole(seed = 3, edit = () => {}) {
   const p = cleanParams(generateHoleParams(seed));
   p.base = []; p.elev = 0; p.bunkers = []; p.ponds = []; p.trees = []; p.green.bumps = []; p.green.lift = 0;
   p.wind = { x: 0, z: 0 }; p.ctrl = [[0, 0], [p.L, 0]]; p.corners = []; p.green.x = 0;
+  p.fairway.z0 = -60;   // fairway right from the tee, so rolling tests start on fairway
   edit(p);
   return p;
 }
@@ -132,7 +133,7 @@ test('sand stops a rolling ball fast', () => {
   const h = new Hole(p);
   const r = simulateShot(h, { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 12, spin: 0, air: false });
   assert.equal(h.surface(r.end.x, r.end.z), 'sand');
-  assert.ok(r.end.z < 18, `rolled to ${r.end.z}`);
+  assert.ok(r.end.z < 20, `rolled to ${r.end.z}`);
 });
 
 test('determinism + replay of a full hole (mixed modes, clubs, swing meter)', () => {
@@ -219,4 +220,15 @@ test('replay includes curve actions', () => {
   assert.equal(g.curve, 0, 'curve resets on the new lie');
   const r = GolfGame.replay(g.initial, g.log, g.tick);
   assert.deepEqual(r.snapshot(), g.snapshot());
+});
+
+test('surface speeds: green fastest, fairway slower, rough much slower; rough lie costs distance', () => {
+  const h = new Hole(flatHole(3));
+  const rollOn = surf => { const hh = Object.create(h); hh.surface = () => surf; return simulateShot(hh, { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 5, spin: 0, side: 0, air: false }).end.z; };
+  const g = rollOn('green'), f = rollOn('fairway'), r = rollOn('rough');
+  assert.ok(g > 3 * f && f > 2.5 * r, `green ${g} fairway ${f} rough ${r}`);
+  const carry = lie => simulateShot(h, launchBall(h, { x: 0, z: 0 }, CLUBS[6], Math.PI / 2, 1, lie)).landing.z;
+  assert.ok(carry('rough') < carry('fairway') * 0.8, `rough ${carry('rough')} vs fairway ${carry('fairway')}`);
+  // a full driver shouldn't run out more than ~20 m on a flat fairway
+  assert.ok(CLUBS[0].total - CLUBS[0].carry < 20, `driver roll ${CLUBS[0].total - CLUBS[0].carry}`);
 });

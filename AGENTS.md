@@ -82,6 +82,13 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
 - Trees: pine = cone crown, round = ellipsoid crown, plus trunk cylinder. Entering a crown bounces
   off its surface, keeps 45% speed, deterministic deflection (hash of tree id/hit count), then
   heavy damping inside → ball drops. Trunks reflect (also while rolling). Spatial hash, 10 m cells.
+- Surface feel (tuned on purpose, see `SURF` in constants.js): a 5 m/s roll goes ~23 m on green,
+  ~5 m on fairway, ~2 m in rough. Landing: driver runs ~13 m on fairway, ~3 m in rough; greens
+  "grip" backspin (`grip`) so a 7i holds within ~11 m and wedges within ~3 m. Rough lie = 85%
+  launch speed and half spin (7i carries ~102 m instead of 148). `club.total` (shown nowhere,
+  used by the caddie) is measured at load on a flat calm fairway with the real sim.
+  Gotcha: tests that roll a ball from the tee must start on fairway (`flatHole` sets
+  `fairway.z0 = -60`), otherwise the rough strip in front of the tee stops it.
 - Power: full clubs launch at `club.speed·√power·lie` (√ makes carry ~ linear in power); putter
   power = fraction of 30 m flat-green roll. Lies (`LIE`) scale speed/spin (rough, sand, …).
 - Results: `rest | holed | water | oob`. Water → +1 and drop at the last dry point, walked back

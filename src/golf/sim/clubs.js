@@ -1,6 +1,6 @@
 // Club table. Each club is defined by its target full-power CARRY on flat ground; the launch
 // speed is solved at load time (deterministic bisection on the same flight integrator).
-import { airStep } from './ball.js';
+import { airStep, simulateShot } from './ball.js';
 import { DT, SUBSTEPS, G } from './constants.js';
 import { sin, cos } from '../../sim/math.js';
 
@@ -51,6 +51,14 @@ CLUBS.push({ id: CLUBS.length, name: 'Putter', short: 'Pt', carry: 0, angle: 0, 
 export const PUTTER = CLUBS.length - 1;
 export const DRIVER = 0;
 
-/** Rough total distance estimate (carry + typical roll) used for auto club selection. */
-export function nominalTotal(club) { return club.putter ? 0 : club.carry * (1.12 - club.angle * 0.35); }
+// Flat, calm, all-fairway stand-in hole used to measure each club's typical total (carry + roll).
+const FLAT_FAIRWAY = { height: () => 0, grad: () => [0, 0], surface: () => 'fairway', treesNear: () => [], cup: { x: 1e9, z: 1e9 }, wind: { x: 0, z: 0 } };
+for (const c of CLUBS) {
+  if (c.putter) { c.total = 0; continue; }
+  const r = simulateShot(FLAT_FAIRWAY, { x: 0, y: 0.001, z: 0, vx: c.speed * cos(c.angle), vy: c.speed * sin(c.angle), vz: 0, spin: c.spin, side: 0, air: true }, { recordPath: false });
+  c.total = r.end.x;
+}
+
+/** Full-power total distance (carry + roll) on a flat calm fairway; used for auto club selection. */
+export function nominalTotal(club) { return club.total; }
 export { G };

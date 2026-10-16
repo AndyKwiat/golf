@@ -132,7 +132,7 @@ export function stepShot(b, hole, ctx) {
         if (vn < 0) {
           const P = SURF[surf];
           const tx = b.vx - vn * nx, ty = b.vy - vn * ny, tz = b.vz - vn * nz;
-          const keep = 1 - Math.min(0.95, P.tf + b.spin * 1.5);
+          const keep = 1 - Math.min(0.95, P.tf + b.spin * P.grip);
           const out = -vn * P.e;
           b.vx = tx * keep + out * nx; b.vy = ty * keep + out * ny; b.vz = tz * keep + out * nz;
           b.spin *= 0.5;
