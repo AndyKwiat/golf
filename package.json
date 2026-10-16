@@ -6,7 +6,7 @@
     "start": "node scripts/serve.mjs",
     "test": "node --test tests/sim.test.mjs tests/math.test.mjs tests/golf.test.mjs",
     "test:browser": "node --test tests/browser.test.mjs",
-    "test:all": "node --test \"tests/*.test.mjs\"",
+    "test:all": "npm test && npm run test:browser",
     "sim": "node scripts/sim.mjs",
     "shot": "node scripts/shot.mjs",
     "golf": "node scripts/golf.mjs"

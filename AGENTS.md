@@ -18,6 +18,7 @@ without a browser and take headless screenshots when you need visuals.
 npm start                  # http://localhost:5173 (golf) and /putting.html — zero-dep server, no build
 npm test                   # headless sim tests: putting + math + golf (~20 s), no browser
 npm run test:browser       # headless Chrome: both pages boot clean, node<->browser bit-exact, bot plays a hole
+npm run test:all           # both, sequentially (running them in parallel starves SwiftShader -> timeouts)
 npm run golf -- info  --seed 7
 npm run golf -- shot  --seed 7 --club 7i --power 0.9 [--aim-offset 0.02] [--path]
 npm run golf -- play  --seed 7          # bot plays the hole out, shot by shot
