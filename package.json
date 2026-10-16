@@ -1,14 +1,15 @@
 {
   "name": "putting-green",
   "version": "1.0.0",
-  "description": "three.js golf putting simulator with a deterministic fixed-timestep sim",
+  "description": "three.js golf game (full random holes + putting-only mode) with a deterministic fixed-timestep sim",
   "scripts": {
     "start": "node scripts/serve.mjs",
-    "test": "node --test tests/sim.test.mjs tests/math.test.mjs",
+    "test": "node --test tests/sim.test.mjs tests/math.test.mjs tests/golf.test.mjs",
     "test:browser": "node --test tests/browser.test.mjs",
     "test:all": "node --test \"tests/*.test.mjs\"",
     "sim": "node scripts/sim.mjs",
-    "shot": "node scripts/shot.mjs"
+    "shot": "node scripts/shot.mjs",
+    "golf": "node scripts/golf.mjs"
   },
   "keywords": [],
   "author": "",

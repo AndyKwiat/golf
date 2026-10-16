@@ -1,125 +1,144 @@
-# Putting Green — notes for agents
+# Golf — notes for agents
 
-A three.js golf **putting** game (Mario-Golf-style meter, plus a "cheat" mode with exact path preview).
-The simulation is pure, deterministic JS that runs identically in Node and the browser, so you
-can iterate on gameplay without ever opening a browser, and take screenshots headlessly when you do
-need visuals.
+Two three.js games sharing one deterministic-sim architecture:
+
+- **Full golf** (`index.html`, `src/golf/`): one random par 3/4/5 hole at a time — fairway, rough,
+  bunkers, ponds, trees (balls bounce off them), 14 clubs, auto-putter on the green. **Cheat mode is
+  the default** (set power exactly, see the exact flight + roll before you shoot); normal mode is
+  the Mario-Golf 3-press meter.
+- **Putting only** (`putting.html`, `src/sim/` + `src/main.js`): the original putting-green game.
+
+Both sims are pure JS that runs bit-identically in Node and Chrome, so you can iterate on gameplay
+without a browser and take headless screenshots when you need visuals.
 
 ## Commands
 
 ```bash
-npm start                 # http://localhost:5173  (zero-dep static server, no build step)
-npm test                  # headless sim + math tests (~5 s), no browser
-npm run test:browser      # headless Chrome smoke test: boots page, checks node<->browser bit-exactness
-npm run sim -- info  --seed 7
-npm run sim -- putt  --seed 7 --power 0.5 --aim-offset 0.02 --path
-npm run sim -- solve --seed 7          # solver bot plays the hole out
-npm run sim -- bench --from 1 --to 50  # playability check across many greens
-npm run shot -- --seed 7 --mode cheat --do "setPower(0.45)" --out shots/a.png
+npm start                  # http://localhost:5173 (golf) and /putting.html — zero-dep server, no build
+npm test                   # headless sim tests: putting + math + golf (~20 s), no browser
+npm run test:browser       # headless Chrome: both pages boot clean, node<->browser bit-exact, bot plays a hole
+npm run golf -- info  --seed 7
+npm run golf -- shot  --seed 7 --club 7i --power 0.9 [--aim-offset 0.02] [--path]
+npm run golf -- play  --seed 7          # bot plays the hole out, shot by shot
+npm run golf -- bench --from 1 --to 12  # bot over many holes (~4 s/hole)
+npm run sim  -- info|putt|solve|bench   # same for the putting game (see scripts/sim.mjs)
+npm run shot -- --seed 7 --do "setClub('5i')" --do "shoot()" --out shots/a.png        # golf page
+npm run shot -- --page putting.html --seed 7 --mode cheat --do "setPower(0.45)" --out shots/p.png
 ```
 
 Screenshots: `scripts/shot.mjs` starts its own server on a random port, opens the page **paused**
 in headless Chrome (system Chrome via Playwright `channel: 'chrome'`, falling back to bundled
 Chromium; SwiftShader WebGL), runs each `--do EXPR` as `window.__golf.EXPR` in order, saves a PNG
-and prints the final state JSON (plus any page errors — check `errors` is `[]`). Flags:
-`--seed --mode normal|cheat --cam auto|overhead --grid 0|1 --hud 0|1 --width --height --out`.
-`--frames DIR --putt-frames K` putts with the current settings and saves a frame every K ticks.
-Read the PNG with your image-viewing tool to check visuals. `shots/` is scratch output.
+and prints final state JSON plus page `errors` (must be `[]`). Flags: `--page --seed --mode
+normal|cheat --cam auto|overhead --grid 0|1 --hud 0|1 --width --height --out`. Look at the PNG
+with your image tool. `shots/` is gitignored scratch. Hole build takes ~1.2 s in SwiftShader.
 
 ## Layout
 
 ```
-src/sim/          PURE simulation: no three.js, no DOM, no Math.random, no wall clock
-  constants.js    every tunable (friction, cup size, meter speeds, power scale, world size)
-  math.js         deterministic exp/sin/cos/atan2/len2 (see "Determinism")
-  rng.js          mulberry32 seeded PRNG
-  terrain.js      Terrain class + generateGreenParams(seed) + flatGreen() for tests
-  physics.js      stepBall() one fixed tick; simulatePutt() full putt; powerToSpeed()
-  game.js         Game state machine, action queue, log, replay, snapshot
-  solver.js       brute-force best putt (coarse-to-fine aim x power search)
-src/render/view.js  three.js scene; reads Game, never mutates it
-src/main.js       fixed-timestep loop, input -> actions, HUD, window.__golf agent API
-scripts/          serve.mjs, shot.mjs (screenshots), sim.mjs (headless CLI)
-tests/            node:test suites
+src/sim/              shared + putting-game sim (pure: no three.js/DOM/Math.random/clock)
+  math.js             deterministic exp/sin/cos/atan2/len2 — USE THESE in all sim code
+  rng.js              mulberry32
+  constants.js terrain.js physics.js game.js solver.js   (putting game)
+src/golf/sim/         full-hole sim (pure)
+  constants.js        physics + surface tables (SURF), lie modifiers (LIE), meter, aero (KD, KL)
+  clubs.js            club table; launch speed solved at load so full-power flat carry == target
+  hole.js             Hole class (height/grad/surface/trees) + generateHoleParams(seed)
+  ball.js             3D ball: airStep (drag+lift), bounces, rolling, trees, cup; stepShot/simulateShot
+  game.js             GolfGame state machine, auto club/aim/power, penalties, log/replay
+  bot.js              brute-force shot search (tests, autoShot/playHole)
+src/golf/render/      view.js (terrain, textures, water, trees, lines, cameras), sky.js (dome,
+                      sun, toon clouds, horizon rings)
+src/golf/main.js      loop, input, HUD, minimap, window.__golf
+src/render/view.js, src/main.js   putting game view/entry
+scripts/              serve.mjs, shot.mjs, golf.mjs, sim.mjs
+tests/                sim.test (putting), math.test, golf.test, browser.test
 ```
 
-## Simulation model
+## Full-hole sim model
 
-- Fixed timestep `DT = 1/60` s, `SUBSTEPS = 4` semi-implicit Euler substeps per tick.
-  Rendering is decoupled: `main.js` accumulates wall time and calls `game.step()` per 1/60 s,
-  then renders with `alpha` interpolation between `game.prevBall` and `game.ball`.
-- Ball is a point `{x, z, vx, vz}` moving in the horizontal plane; height = `terrain.height(x,z)`.
-  Slope accel = `-(5/7) g ∇h / sqrt(1+|∇h|²)` (rolling sphere); rolling resistance `mu·g`
-  opposite velocity, `mu` by surface (`green 0.055` ≈ stimp 10, `fringe`, `rough`). Ball rests
-  when slow AND slope accel ≤ `mu·g`.
-- Power ∈ [0,1] is defined as **fraction of `MAX_FLAT_DIST` (40 m) the ball would roll on a flat
-  green**; `powerToSpeed` inverts that. So meter tick labels are honest flat distances.
-- Cup: capture when center within `CUP_R` and speed ≤ `1.63·sqrt(1-(d/R)²)`; otherwise a one-time
-  lip-out deflection (+15% speed loss).
-- Surfaces by radial distance outside the green outline: green → fringe (1.2 m) → rough (8 m) →
-  OOB. OOB (or leaving the world square) = ball back to previous spot, +1 penalty stroke.
-- Terrain: sum of 7–12 gaussian hills + tilt + a raised collar outside the green. Hills are big
-  on purpose (2–4 m relief, ~10% mean slope) and rescaled so the green's max slope ≤ 25%
-  (`MAX_GREEN_SLOPE` in terrain.js). Cup goes on a ≤4% spot (flattest sample as fallback); start
-  slope ≤7%, which must stay under the rest threshold `mu·7/5 ≈ 7.7%` or the ball won't sit still.
-  Balls can't stop on steeper ground, so they run off into hollows — intended.
-  Gradient is central-difference (`grad()`), so you can change `height()` freely.
+- Fixed timestep `DT = 1/60`, `SUBSTEPS = 8` (fast ball vs 0.25 m trunks). Rendering interpolates
+  `prevBall → ball` with the accumulator alpha.
+- Coordinates: tee at origin, hole runs toward **+z** along centerline `x = cx(z)` (cosine-eased
+  between control points → doglegs). `lat(x,z)` = lateral offset from it. Looking from the tee,
+  **+x is screen-LEFT** (the minimap is flipped to match). Aim = `atan2(dz, dx)`, ≈ π/2 at the tee;
+  increasing aim turns right on screen.
+- Surfaces, priority: `oob > tee > green > fringe > water > sand > fairway > rough`. Green,
+  bunkers and ponds are "blobs" (circle + harmonics, rotated & stretched, `blobDist` < 0 inside).
+  OOB = beyond `corridor()` laterally or past the ends.
+- Height = rolling gaussians + elevation ramp + side banks, flattened toward constants near green
+  and tee, + green plateau + green bumps (rescaled so green slope ≤ 12%) − bunker bowls; ponds
+  replace terrain inside the blob with a bed below the water `level` (level = lowest shore − 0.15).
+- Flight: gravity + drag `KD|v|v` + lift `KL·spin·|v|²` ⟂ v (up); spin decays (`SPIN_DECAY`).
+  Ground contact: reflect with surface restitution `e`, lose tangential speed `tf + 1.5·spin`;
+  below `BOUNCE_TO_ROLL` it rolls (putting-game rolling model with per-surface `roll` friction).
+- Trees: pine = cone crown, round = ellipsoid crown, plus trunk cylinder. Entering a crown bounces
+  off its surface, keeps 45% speed, deterministic deflection (hash of tree id/hit count), then
+  heavy damping inside → ball drops. Trunks reflect (also while rolling). Spatial hash, 10 m cells.
+- Power: full clubs launch at `club.speed·√power·lie` (√ makes carry ~ linear in power); putter
+  power = fraction of 30 m flat-green roll. Lies (`LIE`) scale speed/spin (rough, sand, …).
+- Results: `rest | holed | water | oob`. Water → +1 and drop at the last dry point, walked back
+  toward the shot origin until clear of water/sand. OOB → +1, replay from the previous spot.
+- Auto caddie on every new lie (`_newLie`): putter on the green; otherwise the shortest club whose
+  nominal total reaches (driver only from the tee); aim at the cup if in range, else at the
+  centerline one club-length ahead; power by bisection on the real sim so the ball finishes at
+  the pin distance along the aim line.
 
-## Game / input model (important for determinism)
+## Game / input model (both games)
 
-All input goes through `game.dispatch(action)`; actions are applied at the start of the next
-`step()` and logged as `{tick, action}` in `game.log`. `Game.replay(game.initial, game.log, tick)`
-rebuilds the exact state. Held keys (aim/power) are sampled once per tick in `main.js` and turned
-into `setAim`/`setPower` actions, so even live keyboard play is replayable.
+All input goes through `game.dispatch(action)`, applied at the start of the next `step()`, logged
+as `{tick, action}`; `GolfGame.replay(game.initial, game.log, tick)` (or `Game.replay`) rebuilds
+the exact state. Held keys are sampled once per tick in main.js and turned into actions.
 
-Actions: `setAim {aim}` · `setPower {power}` (cheat power) · `setMode {mode}` · `newGreen {seed}` ·
-`putt {aim?, power?}` (direct, no meter; what cheat mode and agents use) · `swingPress`
-(normal-mode meter: press 1 starts the marker, press 2 locks power, press 3 sets accuracy; marker
-running past `SWING.zoneMin` auto-hits with max push; falling back to 0 before press 2 cancels).
-Phases: `aim → swing → rolling → aim … → holed`. Aim is radians in the x/z plane
-(`atan2(dz, dx)`); increasing aim turns the shot to the right on screen.
+Golf actions: `setAim {aim}` · `setPower {power}` · `setClub {club, reaim?}` (re-suggests
+aim/power) · `cycleClub {dir}` · `setMode {mode}` · `newHole {seed}` · `shoot {aim?, power?, club?}`
+· `swingPress` (normal mode meter, same as putting). Phases: `aim → swing → moving → aim … → holed`.
+Cheat preview = `game.preview()` = `simulateShot(launchFor(...))` with the same `stepShot` — exact.
 
-Cheat preview = `game.preview(aim, power)` = `simulatePutt` with the same `stepBall`, so the
-drawn path is exactly the live path (tested tick-for-tick).
+## Browser agent API (`window.__golf`, golf page)
 
-## Browser agent API (`window.__golf`)
+URL: `?seed=N&mode=normal&paused=1&cam=overhead&grid=0&hud=0` (mode defaults to cheat).
+`step(n)` · `settle()` · `shoot(aim?, power?, club?)` (club = index or `'7i'`) · `autoShot()` ·
+`playHole()` · `setClub(c)` · `setAim(a)` · `aimAtHole()` · `setPower(p)` · `setMode(m)` ·
+`newHole(seed?)` · `dispatch(a)` · `preview(...)` · `state()` · `setCamera('auto'|'overhead', zoom)`
+· `setGrid(b)` · `setHud(b)` · `advanceVisuals(secs)` (clouds/flag only) · `screenshot()` ·
+`render()` · `pause()/resume()` · `buildMs()`. Also `game`, `view`, `CLUBS` objects for poking.
+The putting page has the same style API (`putt`, `autoPutt`, `newGreen`, …).
 
-Load with `?seed=N&mode=cheat&paused=1&cam=overhead&grid=0&hud=0`. When paused, nothing advances
-unless you call:
-`step(n)` · `settle()` · `putt(aim?, power?)` (returns settled snapshot) · `autoPutt()` · `solve()` ·
-`setAim(a)` · `aimAtHole()` · `setPower(p)` · `setMode(m)` · `newGreen(seed?)` · `dispatch(action)` ·
-`preview(aim?, power?)` · `state()` · `setCamera('auto'|'overhead', zoom)` · `setGrid(bool)` ·
-`setHud(bool)` · `screenshot()` (canvas PNG data URL) · `render()` · `pause()/resume()`.
-Calls that step also render a "snapped" (unsmoothed) camera frame so screenshots are reproducible.
-`window.__golfReady === true` once booted. Keys in the real game: ←/→ aim (Shift fine), Space
-meter/putt, ↑/↓ cheat power, Enter putt, N new green, M mode, C camera, G grid, H hud, P pause;
-click/drag the green to aim; drag the meter in cheat mode; wheel zooms.
+Keys (golf): ←/→ aim (Shift fine), ↑/↓ power (cheat), Q/E or [ ] club, Space shoot / meter,
+Enter shoot, N new hole, M mode, C overhead cam, G grid, H hud, P pause; click terrain or
+minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
 
 ## Determinism — lessons learned
 
-- **Never use `Math.exp/sin/cos/atan2/log/hypot/pow` in `src/sim/`.** Node 24 and current Chrome
-  ship different libm code; results differed in the last bits and a putt ended 1e-14 m apart.
-  Use `src/sim/math.js` (pure + − × ÷ sqrt; IEEE-exact everywhere). `tests/math.test.mjs` checks
-  accuracy; `test:browser` checks Node vs Chrome bit-equality of a full putt. Render code may use
-  `Math.*` freely.
-- No `Math.random`/`Date`/`performance` in sim. Random seeds for new greens are chosen by the UI
-  and passed in the `newGreen` action.
-- Visual-only animation (flag wave, slope dots, camera smoothing, hole sink) lives in `view.js` and
-  is driven by `dtReal`; in paused/agent mode `step(n)` advances it by `n·DT`, so shots are stable.
-  HUD toasts use wall-clock timeouts — use `--hud 0` if a screenshot must be pixel-stable.
+- **Never use `Math.exp/sin/cos/atan2/log/hypot/pow` in sim code.** Node 24 and current Chrome
+  ship different libm code (last-bit differences → a putt ended 1e-14 m apart). Use
+  `src/sim/math.js` (only + − × ÷ sqrt; IEEE-exact everywhere). `Math.sqrt/floor/round/abs/imul`
+  are fine. Render code may use `Math.*`.
+- No `Math.random`/`Date`/`performance` in sim; random seeds come from the UI via actions.
+- Visual-only animation (clouds, flag, slope dots, camera smoothing) is driven by `dtReal`; paused
+  `step(n)` advances it by `n·DT`. HUD toasts use wall-clock timeouts → `--hud 0` for pixel-stable.
+
+## Rendering notes / gotchas
+
+- Terrain is one tensor-product grid with **non-uniform spacing**: 0.3 m in the green patch strip,
+  1.5 m in play, growing to 320 m outside, outer ring skirted down to a horizon ground disk.
+  Three material groups chosen per triangle: outer (tiled, `uv2`), in-play (one baked texture,
+  `uv`), green patch (hi-res texture + grid variant, `uv1`; `texture.channel` selects the uv set).
+- Baked textures (`paint()`) = surface colors + hillshade from `SUN_DIR` + green height tint +
+  contours. Readability constants at the top of view.js (`NORMAL_EXAGGERATION`, `SHADE_*`).
+- The horizon ground disk must sit below the lowest terrain (it once poked through a valley and
+  looked like a grey "pond"). Raycast debugging (see git history) found it quickly.
+- Water needs an env map (PMREM of the sky dome, `Sky.envMap`) or it looks grey at grazing angles.
+- Lines are `Line2`/`LineMaterial` (pixel widths); update `resolution` on resize.
+- Ball, markers and halo are scaled up with camera distance (ball ×2.5+ in flight) so they're
+  trackable. `logarithmicDepthBuffer` is on (near 0.05, far 9000).
+- Mountains/hills are vertex-colored rings with 8 rows per column (fewer rows = streaky shading).
 
 ## Tips
 
-- Iterate physics/terrain with `npm test` + `npm run sim`; only screenshot for visual changes.
-- `npm run sim -- bench` after terrain changes: every green should be holeable (solver avg ≈ 1–1.3).
-- A specific bug repro = seed + action log; put it in a test with `Game.replay`.
-- The 2048² surface texture and 400² terrain mesh are rebuilt per green in `View.buildGreen()`
-  (~0.3 s); the grid/dots are a texture swap + an InstancedMesh.
-- Hill readability (deliberately unrealistic) is tuned by constants at the top of `view.js`:
-  `NORMAL_EXAGGERATION` (mesh normals as if hills were steeper), `SHADE_EXAGGERATION` (baked
-  hillshade in the texture, fixed light direction so it's view-independent), `CONTOUR_STEP`
-  (contour lines). The texture also tints by height (low = bluer/darker, high = yellower) and
-  darkens hollows via the laplacian. Lights: low warm sun + cool opposite fill + dim hemisphere.
-  Check changes with `npm run shot -- --seed 11 --grid 0`.
-- `view.js` maps world x/z directly to mesh x/z (no rotated PlaneGeometry); textures use
-  `flipY = false` so canvas row j ↔ world z.
+- Gameplay/physics: iterate with `npm test` + `npm run golf`; screenshot only for visuals.
+- A bug repro = seed + action log → a test using `GolfGame.replay`. For controlled physics tests,
+  `cleanParams(generateHoleParams(s))` then strip hazards/hills (see `flatHole()` in golf.test).
+- Putting-game specifics: power = fraction of 40 m flat roll; greens deliberately steep (≤ 25%);
+  `MAX_START_SLOPE` must stay below the rest threshold `mu·7/5 ≈ 7.7%`.

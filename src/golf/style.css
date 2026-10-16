@@ -1,0 +1,12 @@
+/* full-hole game additions on top of src/style.css */
+#clubs { top: 160px; left: 12px; padding: 6px; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+#clubs .club { display: flex; justify-content: space-between; gap: 10px; padding: 3px 8px; border-radius: 5px; cursor: pointer; min-width: 74px; }
+#clubs .club:hover { background: rgba(255,255,255,.15); }
+#clubs .club.on { background: #ffe14d; color: #222; }
+#clubs .club span { opacity: .75; }
+#minimap { top: 64px; right: 12px; padding: 0; width: 170px; height: 380px; cursor: crosshair; border: 2px solid rgba(255,255,255,.5); }
+#btn-shoot { font-size: 16px; font-weight: 700; padding: 8px 26px; background: #ffe14d; color: #222; pointer-events: auto; }
+#bottom { width: min(640px, calc(100% - 32px)); }
+#meter-ticks span { white-space: nowrap; }
+a.link { color: #fff; font-size: 12px; opacity: .8; align-self: center; margin-left: 4px; }
+@media (max-width: 700px) { #clubs, #minimap { display: none; } }

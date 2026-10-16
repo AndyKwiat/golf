@@ -1,0 +1,163 @@
+// Full-hole game sim tests (headless): `npm test`
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { GolfGame, launchBall } from '../src/golf/sim/game.js';
+import { generateHoleParams, cleanParams, Hole } from '../src/golf/sim/hole.js';
+import { CLUBS, PUTTER, flatCarry } from '../src/golf/sim/clubs.js';
+import { simulateShot } from '../src/golf/sim/ball.js';
+import { botPlayHole } from '../src/golf/sim/bot.js';
+
+/** A flat, hazard-free version of a generated hole (handy for controlled experiments). */
+function flatHole(seed = 3, edit = () => {}) {
+  const p = cleanParams(generateHoleParams(seed));
+  p.base = []; p.elev = 0; p.bunkers = []; p.ponds = []; p.trees = []; p.green.bumps = []; p.green.lift = 0;
+  edit(p);
+  return p;
+}
+
+test('same seed => identical hole', () => {
+  assert.deepEqual(cleanParams(generateHoleParams(17)), cleanParams(generateHoleParams(17)));
+  assert.notDeepEqual(cleanParams(generateHoleParams(17)), cleanParams(generateHoleParams(18)));
+});
+
+test('generated holes are sane across many seeds', () => {
+  const pars = new Set(); let water = 0, sand = 0;
+  for (let s = 1; s <= 40; s++) {
+    const g = new GolfGame({ seed: s }), h = g.hole;
+    pars.add(h.par);
+    assert.equal(h.surface(h.tee.x, h.tee.z), 'tee', `seed ${s} tee`);
+    assert.equal(h.surface(h.cup.x, h.cup.z), 'green', `seed ${s} cup`);
+    assert.ok(h.slope(h.cup.x, h.cup.z) < 0.08, `seed ${s} cup slope`);
+    const range = { 3: [120, 200], 4: [320, 440], 5: [455, 560] }[h.par];
+    assert.ok(h.length > range[0] && h.length < range[1] + 15, `seed ${s} par ${h.par} length ${h.length}`);
+    for (const t of h.trees) assert.equal(h.surface(t.x, t.z), 'rough', `seed ${s} tree ${t.id} not in rough`);
+    if (h.ponds.length) water++;
+    if (h.bunkers.length) sand++;
+  }
+  assert.deepEqual([...pars].sort(), [3, 4, 5]);
+  assert.ok(water >= 10 && sand >= 30, `water ${water} sand ${sand}`);
+});
+
+test('clubs carry their nominal distance at full power on flat ground', () => {
+  for (const c of CLUBS) {
+    if (c.putter) continue;
+    const carry = flatCarry(c.speed, c.angle, c.spin);
+    assert.ok(Math.abs(carry - c.carry) < 0.5, `${c.short}: ${carry}`);
+  }
+  // longer clubs go further
+  for (let i = 1; i < PUTTER; i++) assert.ok(CLUBS[i].carry < CLUBS[i - 1].carry);
+});
+
+test('cheat preview exactly matches the live shot (full shot and putt)', () => {
+  for (const seed of [2, 9]) {
+    const g = new GolfGame({ seed });
+    const pv = g.preview();
+    g.dispatch({ type: 'shoot' });
+    const live = [{ x: g.ball.x, y: g.ball.y, z: g.ball.z }];
+    do { g.step(); live.push({ x: g.ball.x, y: g.ball.y, z: g.ball.z }); } while (g.phase === 'moving');
+    assert.equal(g.lastShot.result, pv.result);
+    // path[0] is the launched ball (lifted 1 mm off the turf); compare every simulated tick after it
+    if (pv.result === 'rest') assert.deepEqual(live.slice(1), pv.path.slice(1), `seed ${seed}`);
+  }
+});
+
+test('ball on the green auto-selects the putter', () => {
+  const g = new GolfGame({ seed: 7 });
+  botPlayHole(g, 1); // one bot shot
+  if (g.lie === 'green') assert.equal(g.clubId, PUTTER);
+  // force it: drop the ball on the green next to the cup
+  const p = cleanParams(g.hole.params);
+  p.tee = { x: p.cup.x + 0.01, z: p.cup.z - 30 };
+  const g2 = new GolfGame({ holeParams: p });
+  assert.notEqual(g2.lie, 'green');
+  g2.ball.x = p.cup.x + 2; g2.ball.z = p.cup.z;
+  g2._newLie();
+  assert.equal(g2.clubId, PUTTER);
+});
+
+test('trees: a shot into a tree is knocked down short', () => {
+  const p0 = flatHole(3);
+  const free = new GolfGame({ holeParams: p0 });
+  free.dispatch({ type: 'shoot', club: 6, aim: Math.PI / 2, power: 1 });
+  free.runUntilSettled();
+  const p1 = flatHole(3, p => {
+    p.trees = [{ id: 0, x: 0, z: 20, type: 'round', s: 1, y0: 0, trunkR: 0.3, trunkTop: 3, crownY: 6, crownR: 4, crownRy: 4 }];
+  });
+  // check the free shot actually passes through that crown region
+  const g = new GolfGame({ holeParams: p1 });
+  const pv = g.preview(Math.PI / 2, 1, 6);
+  assert.ok(pv.treeHits > 0, 'expected a tree hit');
+  g.dispatch({ type: 'shoot', club: 6, aim: Math.PI / 2, power: 1 }); g.runUntilSettled();
+  assert.ok(g.ball.z < free.ball.z - 50, `tree didn't stop it: ${g.ball.z} vs ${free.ball.z}`);
+  assert.ok(g.lastShot.treeHits > 0);
+});
+
+test('trees: rolling into a trunk bounces back', () => {
+  const p = flatHole(3, p => { p.trees = [{ id: 0, x: 0, z: 10, type: 'pine', s: 1, y0: 0, trunkR: 0.3, trunkTop: 2, crownBase: 1.2, crownTop: 9, crownR: 2.5 }]; });
+  const h = new Hole(p);
+  const r = simulateShot(h, { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 8, spin: 0, air: false });
+  assert.ok(r.treeHits > 0);
+  assert.ok(r.end.z < 10, `ended at ${r.end.z}`);
+});
+
+test('water: penalty stroke and a drop on dry land', () => {
+  const p = flatHole(3, p => {
+    p.ponds = [{ x: 0, z: 140, R0: 15, rot: 0, sx: 1, harm: [], level: -0.2 }];
+  });
+  const g = new GolfGame({ holeParams: p });
+  assert.equal(g.hole.surface(0, 140), 'water');
+  g.dispatch({ type: 'shoot', club: 6, aim: Math.PI / 2, power: 1 }); g.runUntilSettled();
+  assert.equal(g.lastShot.result, 'water');
+  assert.equal(g.strokes, 2);
+  assert.notEqual(g.lie, 'water');
+  assert.ok(g.ball.z < 140 && g.ball.z > 100, `drop at z=${g.ball.z}`);
+  assert.equal(g.phase, 'aim');
+});
+
+test('out of bounds: back to the previous spot with a penalty', () => {
+  const p = flatHole(3);
+  const g = new GolfGame({ holeParams: p });
+  g.dispatch({ type: 'shoot', club: 0, aim: 0.15, power: 1 }); g.runUntilSettled(); // driver nearly sideways
+  assert.equal(g.lastShot.result, 'oob');
+  assert.equal(g.strokes, 2);
+  assert.deepEqual([g.ball.x, g.ball.z], [p.tee.x, p.tee.z]);
+});
+
+test('sand stops a rolling ball fast', () => {
+  const p = flatHole(3, p => { p.bunkers = [{ x: 0, z: 20, R0: 6, rot: 0, sx: 1, harm: [], depth: 0 }]; });
+  const h = new Hole(p);
+  const r = simulateShot(h, { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 12, spin: 0, air: false });
+  assert.equal(h.surface(r.end.x, r.end.z), 'sand');
+  assert.ok(r.end.z < 18, `rolled to ${r.end.z}`);
+});
+
+test('determinism + replay of a full hole (mixed modes, clubs, swing meter)', () => {
+  const g = new GolfGame({ seed: 21 });
+  g.dispatch({ type: 'setClub', club: 1 }).run(2);
+  g.dispatch({ type: 'setAim', aim: g.aim + 0.01 }).run(1);
+  g.dispatch({ type: 'shoot' }); g.runUntilSettled();
+  g.dispatch({ type: 'setMode', mode: 'normal' }).run(1);
+  g.dispatch({ type: 'swingPress' }).run(50);
+  g.dispatch({ type: 'swingPress' }).run(30);
+  g.dispatch({ type: 'swingPress' }); g.runUntilSettled();
+  g.dispatch({ type: 'cycleClub', dir: -1 }).dispatch({ type: 'setMode', mode: 'cheat' }).run(2);
+  g.dispatch({ type: 'shoot' }); g.runUntilSettled();
+  const r = GolfGame.replay(g.initial, g.log, g.tick);
+  assert.deepEqual(r.snapshot(), g.snapshot());
+});
+
+test('launch from rough/sand is weaker than from fairway', () => {
+  const h = new Hole(flatHole(3));
+  const c = CLUBS[6], pos = { x: 0, z: 0 };
+  const sp = l => { const b = launchBall(h, pos, c, 0, 1, l); return Math.hypot(b.vx, b.vy, b.vz); };
+  assert.ok(sp('rough') < sp('fairway') && sp('sand') < sp('rough'));
+});
+
+test('bot can play holes out in a sensible number of strokes', () => {
+  for (const seed of [5, 12, 30]) {
+    const g = new GolfGame({ seed });
+    const strokes = botPlayHole(g);
+    assert.equal(g.phase, 'holed', `seed ${seed}`);
+    assert.ok(strokes <= g.hole.par + 2, `seed ${seed}: ${strokes} on par ${g.hole.par}`);
+  }
+});

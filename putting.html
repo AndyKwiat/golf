@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Putting Green</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./src/style.css" />
+  <script type="importmap">
+    { "imports": { "three": "./node_modules/three/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="info" class="panel"></div>
+    <div id="buttons" class="panel">
+      <button id="btn-new" title="N">New green <kbd>N</kbd></button>
+      <button id="btn-mode" title="M">Mode <kbd>M</kbd></button>
+      <button id="btn-cam" title="C">Camera <kbd>C</kbd></button>
+      <button id="btn-grid" title="G">Grid <kbd>G</kbd></button>
+      <a href="./index.html" style="color:#fff;font-size:12px;opacity:.8;align-self:center;margin-left:4px">← Full golf</a>
+    </div>
+    <div id="toast"></div>
+    <div id="bottom">
+      <div id="meter-label"></div>
+      <div id="meter">
+        <div id="meter-fill"></div>
+        <div id="meter-ticks"></div>
+        <div id="meter-impact"></div>
+        <div id="meter-power"></div>
+        <div id="meter-marker"></div>
+      </div>
+      <div id="cheat-row">
+        <button id="btn-putt">PUTT <kbd>Enter</kbd></button>
+      </div>
+      <div id="help"></div>
+    </div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

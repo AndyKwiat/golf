@@ -5,7 +5,9 @@
 //   node scripts/shot.mjs --seed 7 --do "putt(undefined, 0.5)" --cam overhead --out shots/b.png
 //   node scripts/shot.mjs --seed 7 --do "dispatch({type:'swingPress'})" --do "step(40)" --out shots/swing.png
 //
-// Flags: --seed N  --mode normal|cheat  --cam auto|overhead  --grid 0|1  --hud 0|1
+// Pages: default is the full golf game (index.html); --page putting.html for the putting game.
+//
+// Flags: --page FILE  --seed N  --mode normal|cheat  --cam auto|overhead  --grid 0|1  --hud 0|1
 //        --do EXPR (repeatable; evaluated as `__golf.EXPR` in order)  --out FILE
 //        --width W --height H  --frames DIR (with --putt-frames K: saves a frame every K ticks while rolling)
 import { chromium } from 'playwright';
@@ -30,12 +32,12 @@ export async function launchBrowser() {
   catch { return await chromium.launch({ headless: true, args }); }
 }
 
-export async function openGame(browser, port, { seed = 1, mode = 'normal', cam = 'auto', grid = '1', hud = '1', width = 1280, height = 800 } = {}) {
+export async function openGame(browser, port, { seed = 1, mode = '', cam = 'auto', grid = '1', hud = '1', width = 1280, height = 800, page: page_ = '' } = {}) {
   const page = await browser.newPage({ viewport: { width: Number(width), height: Number(height) } });
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto(`http://127.0.0.1:${port}/?seed=${seed}&mode=${mode}&cam=${cam}&grid=${grid}&hud=${hud}&paused=1`);
+  await page.goto(`http://127.0.0.1:${port}/${page_ || ""}?seed=${seed}${mode ? `&mode=${mode}` : ''}&cam=${cam}&grid=${grid}&hud=${hud}&paused=1`);
   await page.waitForFunction(() => window.__golfReady === true, null, { timeout: 30000 });
   await page.evaluate(() => window.__golf.render());
   return { page, errors };

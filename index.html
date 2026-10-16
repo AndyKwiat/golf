@@ -3,23 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Putting Green</title>
+  <title>Golf</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./src/style.css" />
+  <link rel="stylesheet" href="./src/golf/style.css" />
   <script type="importmap">
-    { "imports": { "three": "./node_modules/three/build/three.module.js" } }
+    { "imports": { "three": "./node_modules/three/build/three.module.js", "three/addons/": "./node_modules/three/examples/jsm/" } }
   </script>
 </head>
 <body>
   <canvas id="c"></canvas>
   <div id="hud">
     <div id="info" class="panel"></div>
+    <div id="clubs" class="panel"></div>
     <div id="buttons" class="panel">
-      <button id="btn-new" title="N">New green <kbd>N</kbd></button>
-      <button id="btn-mode" title="M">Mode <kbd>M</kbd></button>
-      <button id="btn-cam" title="C">Camera <kbd>C</kbd></button>
-      <button id="btn-grid" title="G">Grid <kbd>G</kbd></button>
+      <button id="btn-new">New hole <kbd>N</kbd></button>
+      <button id="btn-mode">Cheat <kbd>M</kbd></button>
+      <button id="btn-cam">Overhead <kbd>C</kbd></button>
+      <button id="btn-grid">Grid <kbd>G</kbd></button>
+      <a class="link" href="./putting.html">Putting only →</a>
     </div>
+    <canvas id="minimap" width="170" height="380" class="panel"></canvas>
     <div id="toast"></div>
     <div id="bottom">
       <div id="meter-label"></div>
@@ -30,12 +34,10 @@
         <div id="meter-power"></div>
         <div id="meter-marker"></div>
       </div>
-      <div id="cheat-row">
-        <button id="btn-putt">PUTT <kbd>Enter</kbd></button>
-      </div>
+      <div id="cheat-row"><button id="btn-shoot">SHOOT <kbd>Enter</kbd></button></div>
       <div id="help"></div>
     </div>
   </div>
-  <script type="module" src="./src/main.js"></script>
+  <script type="module" src="./src/golf/main.js"></script>
 </body>
 </html>
