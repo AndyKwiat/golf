@@ -30,7 +30,7 @@ test('generated holes are sane across many seeds', () => {
     assert.equal(h.surface(h.tee.x, h.tee.z), 'tee', `seed ${s} tee`);
     assert.equal(h.surface(h.cup.x, h.cup.z), 'green', `seed ${s} cup`);
     assert.ok(h.slope(h.cup.x, h.cup.z) < 0.08, `seed ${s} cup slope`);
-    const range = { 3: [120, 205], 4: [320, 470], 5: [455, 600] }[h.par];
+    const range = { 3: [155, 270], 4: [420, 610], 5: [595, 780] }[h.par];
     assert.ok(h.length > range[0] && h.length < range[1], `seed ${s} par ${h.par} length ${h.length}`);
     for (const t of h.trees) assert.equal(h.surface(t.x, t.z), 'rough', `seed ${s} tree ${t.id} not in rough`);
     if (h.ponds.length) water++;
@@ -107,15 +107,15 @@ test('trees: rolling into a trunk bounces back', () => {
 
 test('water: penalty stroke and a drop on dry land', () => {
   const p = flatHole(3, p => {
-    p.ponds = [{ x: 0, z: 140, R0: 15, rot: 0, sx: 1, harm: [], level: -0.2 }];
+    p.ponds = [{ x: 0, z: 190, R0: 15, rot: 0, sx: 1, harm: [], level: -0.2 }];
   });
   const g = new GolfGame({ holeParams: p });
-  assert.equal(g.hole.surface(0, 140), 'water');
+  assert.equal(g.hole.surface(0, 190), 'water');
   g.dispatch({ type: 'shoot', club: 6, aim: Math.PI / 2, power: 1 }); g.runUntilSettled();
   assert.equal(g.lastShot.result, 'water');
   assert.equal(g.strokes, 2);
   assert.notEqual(g.lie, 'water');
-  assert.ok(g.ball.z < 140 && g.ball.z > 100, `drop at z=${g.ball.z}`);
+  assert.ok(g.ball.z < 190 && g.ball.z > 150, `drop at z=${g.ball.z}`);
   assert.equal(g.phase, 'aim');
 });
 
@@ -187,9 +187,9 @@ test('wind does not affect putts', () => {
 });
 
 test('draw curves left (+x from the tee), fade curves right (-x)', () => {
-  const g = new GolfGame({ holeParams: flatHole(3) });
+  const g = new GolfGame({ holeParams: flatHole(3, p => { p.roughW = 250; }) });   // wide corridor: full curve leaves a normal one
   const draw = g.preview(Math.PI / 2, 1, 0, -1).landing, fade = g.preview(Math.PI / 2, 1, 0, 1).landing, straight = g.preview(Math.PI / 2, 1, 0, 0).landing;
-  assert.ok(draw.x > 10 && fade.x < -10, `draw ${draw.x} fade ${fade.x}`);
+  assert.ok(draw.x > 90 && fade.x < -90, `full curve should bend a drive ~100+ m: draw ${draw.x} fade ${fade.x}`);
   assert.ok(Math.abs(draw.x + fade.x) < 1e-6, 'symmetric');
   assert.ok(Math.abs(straight.x) < 1e-9);
 });
@@ -230,5 +230,7 @@ test('surface speeds: green fastest, fairway slower, rough much slower; rough li
   const carry = lie => simulateShot(h, launchBall(h, { x: 0, z: 0 }, CLUBS[6], Math.PI / 2, 1, lie)).landing.z;
   assert.ok(carry('rough') < carry('fairway') * 0.8, `rough ${carry('rough')} vs fairway ${carry('fairway')}`);
   // a full driver shouldn't run out more than ~20 m on a flat fairway
-  assert.ok(CLUBS[0].total - CLUBS[0].carry < 20, `driver roll ${CLUBS[0].total - CLUBS[0].carry}`);
+  assert.ok(CLUBS[0].total - CLUBS[0].carry < 30, `driver roll ${CLUBS[0].total - CLUBS[0].carry}`);
+  // video-game distances: a full drive totals ~350 yd
+  assert.ok(Math.abs(CLUBS[0].total * 1.0936 - 350) < 10, `driver total ${CLUBS[0].total * 1.0936} yd`);
 });

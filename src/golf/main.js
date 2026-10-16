@@ -22,7 +22,7 @@ function newHole(s = randomSeed()) { game.dispatch({ type: 'newHole', seed: s })
 function toggleMode() { game.dispatch({ type: 'setMode', mode: game.mode === 'normal' ? 'cheat' : 'normal' }); }
 function cycleCam() { view.camMode = view.camMode === 'auto' ? 'overhead' : 'auto'; view.zoom = 1; }
 /** Change draw/fade; the caddie re-aims so the shaped shot still finishes on the target line. */
-function setCurve(c) { if (!game.club.putter) game.dispatch({ type: 'setCurve', curve: Math.round(Math.max(-1, Math.min(1, c)) * 4) / 4, reaim: true }); }
+function setCurve(c) { if (!game.club.putter) game.dispatch({ type: 'setCurve', curve: Math.round(Math.max(-1, Math.min(1, c)) * 20) / 20, reaim: true }); }
 function primary() {
   if (game.phase === 'holed') return newHole();
   if (game.mode === 'cheat') game.dispatch({ type: 'shoot' });
@@ -41,8 +41,8 @@ addEventListener('keydown', e => {
     case 'g': view.setGrid(!view.showGrid); break;
     case 'h': $('hud').classList.toggle('hidden'); break;
     case 'p': paused = !paused; break;
-    case 'z': setCurve(game.curve - 0.25); break;
-    case 'x': setCurve(game.curve + 0.25); break;
+    case 'z': setCurve(game.curve - (e.shiftKey ? 0.05 : 0.25)); break;
+    case 'x': setCurve(game.curve + (e.shiftKey ? 0.05 : 0.25)); break;
     case 'q': case '[': game.dispatch({ type: 'cycleClub', dir: -1 }); break;
     case 'e': case ']': game.dispatch({ type: 'cycleClub', dir: 1 }); break;
   }
@@ -94,7 +94,7 @@ $('btn-fade').onclick = () => setCurve(game.curve + 0.25);
 for (const b of document.querySelectorAll('button')) b.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') e.preventDefault(); });
 
 // Club list
-$('clubs').innerHTML = CLUBS.map(c => `<div class="club" data-id="${c.id}"><b>${c.short}</b><span>${c.putter ? '' : c.carry + 'm'}</span></div>`).join('');
+$('clubs').innerHTML = CLUBS.map(c => `<div class="club" data-id="${c.id}"><b>${c.short}</b><span>${c.putter ? '' : Math.round(c.total * 1.0936133) + ' yd'}</span></div>`).join('');
 $('clubs').addEventListener('click', e => { const el = e.target.closest('.club'); if (el) game.dispatch({ type: 'setClub', club: Number(el.dataset.id) }); });
 
 // ------------------------------------------------------------------ minimap
@@ -154,6 +154,13 @@ mm.addEventListener('pointerdown', e => { mapDrag = true; mapAim(e); });
 
 function THREE_Vec(cam) { const e = cam.matrixWorld.elements; return { x: -e[8], y: -e[9], z: -e[10] }; }
 
+// ------------------------------------------------------------------ units (sim is meters; display is yards / mph)
+const YD = 1.0936133, MPH = 2.2369363;
+/** meters -> "123 yd" (1 decimal under 20 yd) */
+const yd = m => { const v = m * YD; return `${v.toFixed(v < 20 ? 1 : 0)} yd`; };
+/** short distances on the green read better in feet */
+const ft = m => `${(m * 3.28084).toFixed(m * 3.28084 < 10 ? 1 : 0)} ft`;
+
 // ------------------------------------------------------------------ HUD
 let toastTimer = 0;
 function toast(html, secs = 2.2) {
@@ -172,8 +179,9 @@ function handleEvents() {
       const parts = [];
       if (e.treeHits) parts.push('Hit a tree!');
       if (e.lipouts) parts.push('Lipped out!');
-      const carry = e.carry > 1 ? `carry ${e.carry.toFixed(0)} m · ` : '';
-      toast(`${parts.join(' ')}${parts.length ? '\n' : ''}<small>${carry}${e.total.toFixed(e.total < 20 ? 1 : 0)} m · ${e.lie} · ${e.dist.toFixed(e.dist < 20 ? 1 : 0)} m to go</small>`, 2.2);
+      const carry = e.carry > 1 ? `carry ${yd(e.carry)} · ` : '';
+      const left = e.lie === 'green' ? ft(e.dist) : yd(e.dist);
+      toast(`${parts.join(' ')}${parts.length ? '\n' : ''}<small>${carry}${yd(e.total)} · ${e.lie} · ${left} to go</small>`, 2.2);
     } else if (e.type === 'newHole') { $('toast').classList.remove('show'); view.snap = true; }
     else if (e.type === 'swingCancel') toast('<small>swing cancelled</small>', 1);
   }
@@ -194,9 +202,9 @@ function updateHud(preview) {
   const g = game, h = g.hole;
   const total = g.card.reduce((a, c) => a + c.strokes - c.par, 0);
   $('info').innerHTML = `
-    <div class="big">Par ${h.par} · ${h.length.toFixed(0)} m</div>
+    <div class="big">Par ${h.par} · ${yd(h.length)}</div>
     <div>Stroke: <b>${g.strokes + (g.phase === 'holed' || g.phase === 'moving' ? 0 : 1)}</b> · Lie: <b>${g.phase === 'moving' ? (g.ball.air ? 'in flight' : 'rolling') : g.lie}</b></div>
-    <div>To pin: <b>${g.distToHole().toFixed(g.distToHole() < 30 ? 1 : 0)} m</b></div>
+    <div>To pin: <b>${g.lie === 'green' && g.phase !== 'moving' ? `${ft(g.distToHole())} (${yd(g.distToHole())})` : yd(g.distToHole())}</b></div>
     <div>Round: <b>${total === 0 ? 'E' : (total > 0 ? '+' : '') + total}</b> (${g.card.length} holes)</div>
     <div>Mode: <span class="${g.mode === 'cheat' ? 'mode-cheat' : ''}">${g.mode === 'cheat' ? 'CHEAT (preview)' : 'Normal'}</span> · seed ${g.seed}</div>`;
   $('btn-mode').classList.toggle('on', g.mode === 'cheat');
@@ -207,8 +215,8 @@ function updateHud(preview) {
   const tk = meterTicks(), tkKey = tk.join();
   if (tkKey !== lastTicksKey) {
     lastTicksKey = tkKey;
-    $('meter-ticks').innerHTML = tk.slice(0, 3).map((d, i) => `<div style="left:${vToPct((i + 1) * 0.25)}%"><span>${d.toFixed(d < 20 ? 1 : 0)}m</span></div>`).join('')
-      + `<div style="left:calc(100% - 1px)"><span style="transform:translateX(-110%)">${tk[3].toFixed(0)}m</span></div>`;
+    $('meter-ticks').innerHTML = tk.slice(0, 3).map((d, i) => `<div style="left:${vToPct((i + 1) * 0.25)}%"><span>${yd(d)}</span></div>`).join('')
+      + `<div style="left:calc(100% - 1px)"><span style="transform:translateX(-110%)">${yd(tk[3])}</span></div>`;
   }
   // wind: arrow relative to the camera view (up = blowing away from you), plus help/hurt vs aim
   const w = h.wind, ws = Math.hypot(w.x, w.z);
@@ -216,9 +224,10 @@ function updateHud(preview) {
   const fx = fwd.x / fl, fz = fwd.z / fl, rx = -fz, rz = fx;               // screen right = (-fz, fx)
   const sAng = Math.atan2(w.x * rx + w.z * rz, w.x * fx + w.z * fz);       // 0 = away from camera
   $('wind-arrow').style.transform = `rotate(${sAng}rad)`;   // svg arrow points up at 0
-  $('wind-speed').textContent = `Wind ${ws.toFixed(1)} m/s`;
+  $('wind-speed').textContent = `Wind ${(ws * MPH).toFixed(0)} mph`;
   const ax = Math.cos(g.aim), az = Math.sin(g.aim), along = w.x * ax + w.z * az, cross = w.x * -az + w.z * ax;
-  $('wind-desc').textContent = `${Math.abs(along) < 0.5 ? '' : along > 0 ? `helping ${along.toFixed(0)}` : `into ${(-along).toFixed(0)}`}${Math.abs(along) >= 0.5 && Math.abs(cross) >= 0.5 ? ' · ' : ''}${Math.abs(cross) < 0.5 ? '' : cross > 0 ? `→ ${cross.toFixed(0)} to the right` : `← ${(-cross).toFixed(0)} to the left`}`;
+  const mph = v => (Math.abs(v) * MPH).toFixed(0);
+  $('wind-desc').textContent = `${Math.abs(along) < 0.5 ? '' : along > 0 ? `helping ${mph(along)}` : `into ${mph(along)}`}${Math.abs(along) >= 0.5 && Math.abs(cross) >= 0.5 ? ' · ' : ''}${Math.abs(cross) < 0.5 ? '' : cross > 0 ? `→ ${mph(cross)} to the right` : `← ${mph(cross)} to the left`}`;
   // shot shape
   const showShape = g.phase === 'aim' && !g.club.putter;
   $('shape-row').classList.toggle('hidden', !showShape);
@@ -239,10 +248,10 @@ function updateHud(preview) {
       const carry = preview.landing ? Math.hypot(preview.landing.x - g.ball.x, preview.landing.z - g.ball.z) : 0;
       const tot = Math.hypot(preview.end.x - g.ball.x, preview.end.z - g.ball.z);
       const endLie = preview.result === 'holed' ? 'IN THE HOLE' : preview.result === 'water' ? 'WATER' : preview.result === 'oob' ? 'OUT OF BOUNDS' : h.surface(preview.end.x, preview.end.z);
-      txt += ` — ${carry > 1 ? `carry ${carry.toFixed(0)} m, ` : ''}total ${tot.toFixed(tot < 20 ? 1 : 0)} m → ${endLie}${preview.treeHits ? ' (hits tree)' : ''}`;
+      txt += ` — ${carry > 1 ? `carry ${yd(carry)}, ` : ''}total ${g.club.putter ? ft(tot) : yd(tot)} → ${endLie}${preview.treeHits ? ' (hits tree)' : ''}`;
     }
     $('meter-label').textContent = txt;
-    $('help').textContent = '←/→ or click: aim (Shift fine) · ↑/↓ or drag bar: power · Q/E: club · Z/X: draw/fade · Enter/Space: shoot';
+    $('help').textContent = '←/→ or click: aim (Shift fine) · ↑/↓ or drag bar: power · Q/E: club · Z/X: draw/fade (Shift fine) · Enter/Space: shoot';
   } else {
     const sw = g.swing;
     if (sw) {
@@ -252,7 +261,7 @@ function updateHud(preview) {
       $('meter-label').textContent = sw.stage === 'power' ? `${g.club.name}: Space to set power` : 'Space on the white line to hit straight!';
     } else {
       fill.style.width = '0%'; marker.style.display = 'none'; pw.style.display = 'none';
-      $('meter-label').textContent = `${g.club.name}${g.club.putter ? '' : ` · full carry ≈ ${tk[3].toFixed(0)} m`}`;
+      $('meter-label').textContent = `${g.club.name}${g.club.putter ? '' : ` · full carry ≈ ${yd(tk[3])}`}`;
     }
     $('help').textContent = '←/→ or click: aim (Shift fine) · Q/E: club · Z/X: draw/fade · Space: start / set power / hit';
   }

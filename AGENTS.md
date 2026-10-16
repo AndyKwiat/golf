@@ -81,13 +81,17 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   **air-relative** velocity `v − wind`, so wind pushes, holds up and helps the ball. Spin and
   sidespin decay (`SPIN_DECAY`); sidespin is zeroed at the first bounce. Wind never affects
   rolling (putts are wind-free). `hole.wind = {x, z}` m/s, 3–13 m/s, from the seed.
-  Calibrated reference: 10 m/s cross ≈ 29 m drift on a drive; head −36 m; full draw/fade ≈ 21 m
-  on a drive (`CURVE_SIDESPIN`).
+  Shaping is deliberately exaggerated (`CURVE_SIDESPIN = 0.16`): full draw/fade bends a drive
+  ~123 yd, a 7i ~52 yd, a SW ~18 yd; each 25% step ≈ 32 yd on a drive (Shift+Z/X = 5% steps).
   Ground contact: reflect with surface restitution `e`, lose tangential speed `tf + 1.5·spin`;
   below `BOUNCE_TO_ROLL` it rolls (putting-game rolling model with per-surface `roll` friction).
 - Trees: pine = cone crown, round = ellipsoid crown, plus trunk cylinder. Entering a crown bounces
   off its surface, keeps 45% speed, deterministic deflection (hash of tree id/hit count), then
   heavy damping inside → ball drops. Trunks reflect (also while rolling). Spatial hash, 10 m cells.
+- Units: the sim is **meters and m/s everywhere**; only the HUD converts (yards, feet on the
+  green, mph for wind — helpers `yd()`, `ft()`, `MPH` in main.js). Distances are video-game long:
+  driver carries ~333 yd and totals ~350 yd; holes are scaled to match (`SCALE = 1.3` in
+  hole.js: par 3 ≈ 180–280 yd, par 4 ≈ 460–610 yd, par 5 ≈ 650–770 yd incl. doglegs).
 - Surface feel (tuned on purpose, see `SURF` in constants.js): a 5 m/s roll goes ~23 m on green,
   ~5 m on fairway, ~2 m in rough. Landing: driver runs ~13 m on fairway, ~3 m in rough; greens
   "grip" backspin (`grip`) so a 7i holds within ~11 m and wedges within ~3 m. Rough lie = 85%

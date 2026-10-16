@@ -5,21 +5,22 @@ import { DT, SUBSTEPS, G } from './constants.js';
 import { sin, cos } from '../../sim/math.js';
 
 const DEG = Math.PI / 180;
-// name, short label, target carry (m), launch angle, spin (lift coefficient)
+// name, short label, target carry (m), launch angle, spin (lift coefficient).
+// Video-game distances: driver carries ~330 yd and totals ~350 yd with roll.
 const TABLE = [
-  ['Driver', 'Dr', 230, 11.5, 0.17],
-  ['3 Wood', '3W', 210, 12.5, 0.19],
-  ['5 Wood', '5W', 195, 14, 0.20],
-  ['4 Iron', '4i', 180, 15, 0.20],
-  ['5 Iron', '5i', 170, 16.5, 0.21],
-  ['6 Iron', '6i', 160, 18, 0.22],
-  ['7 Iron', '7i', 148, 20, 0.23],
-  ['8 Iron', '8i', 136, 22.5, 0.24],
-  ['9 Iron', '9i', 124, 25, 0.25],
-  ['Pitching Wedge', 'PW', 110, 28, 0.26],
-  ['Gap Wedge', 'GW', 95, 31, 0.27],
-  ['Sand Wedge', 'SW', 80, 35, 0.28],
-  ['Lob Wedge', 'LW', 60, 42, 0.28],
+  ['Driver', 'Dr', 305, 11, 0.16],
+  ['3 Wood', '3W', 273, 12, 0.18],
+  ['5 Wood', '5W', 254, 13.5, 0.19],
+  ['4 Iron', '4i', 234, 15, 0.20],
+  ['5 Iron', '5i', 221, 16.5, 0.21],
+  ['6 Iron', '6i', 208, 18, 0.22],
+  ['7 Iron', '7i', 192, 20, 0.23],
+  ['8 Iron', '8i', 177, 22.5, 0.24],
+  ['9 Iron', '9i', 161, 25, 0.25],
+  ['Pitching Wedge', 'PW', 143, 28, 0.26],
+  ['Gap Wedge', 'GW', 124, 31, 0.27],
+  ['Sand Wedge', 'SW', 104, 35, 0.28],
+  ['Lob Wedge', 'LW', 78, 42, 0.28],
 ];
 
 /** Carry (horizontal distance until y returns to 0) for a launch on flat ground, no trees. */
@@ -35,7 +36,7 @@ export function flatCarry(speed, angle, spin) {
 }
 
 function solveSpeed(carry, angle, spin) {
-  let lo = 5, hi = 120;
+  let lo = 5, hi = 250;
   for (let i = 0; i < 50; i++) {
     const mid = (lo + hi) / 2;
     if (flatCarry(mid, angle, spin) < carry) lo = mid; else hi = mid;

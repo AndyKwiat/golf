@@ -7,6 +7,7 @@ import { len2, exp, sin, cos, atan2 } from '../../sim/math.js';
 import { FRINGE_WIDTH, CUP_R } from './constants.js';
 
 const PI = Math.PI;
+const SCALE = 1.3;   // hole lengths / dogleg offsets vs. real-world sizes (matches the long clubs)
 export function smoothstep(a, b, x) {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
@@ -194,30 +195,31 @@ export function generateHoleParams(seed) {
   const U = (a, b) => a + rand() * (b - a);
   const sign = () => (rand() < 0.5 ? -1 : 1);
   const par = [3, 4, 5][Math.floor(rand() * 3)];
-  const L = par === 3 ? U(125, 195) : par === 4 ? U(325, 430) : U(460, 540);
+  // Lengths scale with the (video-game) club distances: SCALE = 1.3 vs. real-world yardages.
+  const L = (par === 3 ? U(125, 195) : par === 4 ? U(325, 430) : U(460, 540)) * SCALE;
 
   // Centerline control points [z, x]. Doglegs: par 4s usually bend once, par 5s bend twice
   // (often an S). corners[] records each bend (z, turn direction) for hazards/trees.
   let ctrl;
   const corners = [];
-  if (par === 3) ctrl = [[0, 0], [L, U(-20, 20)]];
+  if (par === 3) ctrl = [[0, 0], [L, U(-20, 20) * SCALE]];
   else if (par === 4) {
     const xa = U(-8, 8);
     if (rand() < 0.8) {
       const dir = sign(), za = L * U(0.55, 0.66);
-      ctrl = [[0, 0], [za, xa], [L, xa + dir * U(35, 85)]];
+      ctrl = [[0, 0], [za, xa], [L, xa + dir * U(35, 85) * SCALE]];
       corners.push({ z: za, dir });
     } else ctrl = [[0, 0], [L * 0.6, xa], [L, xa + U(-15, 15)]];
   } else {
     const d1 = sign(), d2 = rand() < 0.65 ? -d1 : d1;
     const z1 = L * U(0.36, 0.44), z2 = L * U(0.68, 0.76);
-    const x1 = d1 * U(12, 35), x2 = x1 + d2 * U(30, 70);
-    ctrl = [[0, 0], [z1, x1], [z2, x2], [L, x2 + sign() * U(10, 40)]];
+    const x1 = d1 * U(12, 35) * SCALE, x2 = x1 + d2 * U(30, 70) * SCALE;
+    ctrl = [[0, 0], [z1, x1], [z2, x2], [L, x2 + sign() * U(10, 40) * SCALE]];
     corners.push({ z: z1, dir: Math.sign(x2 - x1) || 1 }, { z: z2, dir: Math.sign(ctrl[3][1] - x2) || 1 });
   }
 
   const fairway = {
-    w: U(13, 19), z0: par === 3 ? L - 45 : U(55, 95), z1: L - 6,
+    w: U(14, 21), z0: par === 3 ? L - 50 : U(70, 120), z1: L - 6,
     wobble: [{ a: U(0.06, 0.14), f: U(0.01, 0.03), p: U(0, 6.3) }, { a: U(0.03, 0.08), f: U(0.04, 0.07), p: U(0, 6.3) }],
   };
   const roughW = U(14, 22);
@@ -251,8 +253,8 @@ export function generateHoleParams(seed) {
   }
   // fairway bunkers
   if (par > 3) {
-    const zs = par === 4 ? [U(190, 250)] : [U(190, 250), U(370, 430)];
-    if (rand() < 0.5) zs.push(U(140, 200));
+    const zs = (par === 4 ? [U(190, 250)] : [U(190, 250), U(370, 430)]).map(z => z * SCALE);
+    if (rand() < 0.5) zs.push(U(140, 200) * SCALE);
     for (const z of zs) {
       if (z > L - 70) continue;
       const side = sign(), d = tmp.cxd(z);
@@ -278,7 +280,7 @@ export function generateHoleParams(seed) {
   } else if (par === 4) {
     if (corners.length && rand() < 0.65) pondCands.push(cornerPond(corners[0]));
     if (rand() < 0.45) pondCands.push(rand() < 0.5 ? greenFront() : greenSide());
-    if (rand() < 0.3) pondCands.push(sidePond(U(180, 240), sign()));
+    if (rand() < 0.3) pondCands.push(sidePond(U(180, 240) * SCALE, sign()));
   } else {
     if (rand() < 0.5) pondCands.push(crossPond(L * U(0.52, 0.64)));
     else pondCands.push(cornerPond(corners[Math.floor(rand() * corners.length)]));
@@ -369,7 +371,7 @@ export function generateHoleParams(seed) {
   if (par > 3) {
     const n = 3 + Math.floor(rand() * 6);
     for (let i = 0; i < n; i++) {
-      const z = U(110, L - 70), side = sign(), d = tmp.cxd(z);
+      const z = U(140, L - 80), side = sign(), d = tmp.cxd(z);
       addTree(hole.cx(z) + side * (fairway.w + U(2, roughW)) * Math.sqrt(1 + d * d), z);
     }
   }
