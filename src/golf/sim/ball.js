@@ -1,28 +1,42 @@
 // 3D ball physics for full shots + rolling. A ball is
-//   {x, y, z, vx, vy, vz, spin, air}
+//   {x, y, z, vx, vy, vz, spin, side, air}
+// spin = backspin (lift coefficient), side = sidespin (+ fades / curves right, - draws / left).
+// Wind {x, z} (m/s) acts on the airborne ball through air-relative velocity.
 // stepShot() advances exactly one tick (DT) using SUBSTEPS substeps. The same function drives
 // live play and the cheat-mode preview, so previews are exact.
 import { DT, SUBSTEPS, G, ROLL_FACTOR, KD, KL, SPIN_DECAY, SURF, BOUNCE_TO_ROLL, BALL_R, CUP_R, CUP_CAPTURE_SPEED, REST_SPEED, MAX_SHOT_TICKS } from './constants.js';
 import { len2, sin, cos } from '../../sim/math.js';
 
+const NO_WIND = { x: 0, z: 0 };
+
 /** Pure aerodynamic step (no ground, no trees). Shared with club calibration. */
-export function airStep(b, h) {
-  const sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy + b.vz * b.vz);
+export function airStep(b, h, wind = NO_WIND) {
+  // air-relative velocity
+  const rx = b.vx - wind.x, ry = b.vy, rz = b.vz - wind.z;
+  const sp = Math.sqrt(rx * rx + ry * ry + rz * rz);
   let ax = 0, ay = -G, az = 0;
   if (sp > 1e-6) {
-    ax -= KD * sp * b.vx; ay -= KD * sp * b.vy; az -= KD * sp * b.vz;
-    // lift: perpendicular to v, in the vertical plane, pointing "up"
-    const uy = b.vy / sp;
-    let nx = -uy * b.vx / sp, ny = 1 - uy * uy, nz = -uy * b.vz / sp;
+    ax -= KD * sp * rx; ay -= KD * sp * ry; az -= KD * sp * rz;
+    // lift: perpendicular to v_rel, in the vertical plane, pointing "up"
+    const uy = ry / sp;
+    const nx = -uy * rx / sp, ny = 1 - uy * uy, nz = -uy * rz / sp;
     const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
     if (nl > 1e-9) {
       const L = KL * b.spin * sp * sp / nl;
       ax += nx * L; ay += ny * L; az += nz * L;
     }
+    // sidespin: horizontal force to the right of travel (+side = fade/right, - = draw/left)
+    const hl = Math.sqrt(rx * rx + rz * rz);
+    if (b.side && hl > 1e-6) {
+      const S = KL * b.side * sp * sp / hl;
+      ax += -rz * S; az += rx * S;
+    }
   }
   b.vx += ax * h; b.vy += ay * h; b.vz += az * h;
   b.x += b.vx * h; b.y += b.vy * h; b.z += b.vz * h;
-  b.spin *= 1 - h / SPIN_DECAY;
+  const k = 1 - h / SPIN_DECAY;
+  b.spin *= k;
+  if (b.side) b.side *= k;
 }
 
 function hashAngle(a, b) {
@@ -99,7 +113,7 @@ export function stepShot(b, hole, ctx) {
   const cup = hole.cup;
   for (let i = 0; i < SUBSTEPS; i++) {
     if (b.air) {
-      airStep(b, h);
+      airStep(b, h, hole.wind);
       treeCollide(b, hole, ctx, h);
       const gy = hole.height(b.x, b.z);
       if (b.y - gy > ctx.maxHeight) ctx.maxHeight = b.y - gy;
@@ -122,6 +136,7 @@ export function stepShot(b, hole, ctx) {
           const out = -vn * P.e;
           b.vx = tx * keep + out * nx; b.vy = ty * keep + out * ny; b.vz = tz * keep + out * nz;
           b.spin *= 0.5;
+          b.side = 0;
           ctx.bounces++;
           if (out < BOUNCE_TO_ROLL) { b.air = false; b.vy = 0; }
         }

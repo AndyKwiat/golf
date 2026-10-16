@@ -24,6 +24,7 @@
       <a class="link" href="./putting.html">Putting only →</a>
     </div>
     <canvas id="minimap" width="170" height="380" class="panel"></canvas>
+    <div id="wind" class="panel"><svg id="wind-arrow" width="30" height="30" viewBox="-15 -15 30 30"><path d="M0 -13 L8 -1 L3 -1 L3 12 L-3 12 L-3 -1 L-8 -1 Z" fill="#9fe0ff" stroke="#0b2533" stroke-width="1.2"/></svg><div><div id="wind-speed"></div><div id="wind-desc"></div></div></div>
     <div id="toast"></div>
     <div id="bottom">
       <div id="meter-label"></div>
@@ -33,6 +34,11 @@
         <div id="meter-impact"></div>
         <div id="meter-power"></div>
         <div id="meter-marker"></div>
+      </div>
+      <div id="shape-row">
+        <button id="btn-draw">◀ Draw <kbd>Z</kbd></button>
+        <div id="shape-bar"><div id="shape-mark"></div></div>
+        <button id="btn-fade">Fade ▶ <kbd>X</kbd></button>
       </div>
       <div id="cheat-row"><button id="btn-shoot">SHOOT <kbd>Enter</kbd></button></div>
       <div id="help"></div>

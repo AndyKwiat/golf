@@ -47,7 +47,7 @@ export class Sky {
   }
 
   /** Rebuild seeded scenery around a center point (hole midpoint). */
-  build(seed, center) {
+  build(seed, center, wind = { x: 1, z: 0.35 }) {
     this.center = center.clone();
     const rand = mulberry32((seed * 2654435761) >>> 0);
     for (const c of this.clouds) { this.group.remove(c.mesh); }
@@ -59,7 +59,9 @@ export class Sky {
     grad.minFilter = grad.magFilter = THREE.NearestFilter; grad.needsUpdate = true;
     const cloudMat = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: grad, fog: false, emissive: 0x6a7f99, emissiveIntensity: 0.35 });
     const puff = new THREE.IcosahedronGeometry(1, 2);
-    this.wind = new THREE.Vector3(1, 0, 0.35).normalize().multiplyScalar(14); // m/s
+    // clouds drift with the hole's wind (exaggerated a bit so it reads at cloud distance)
+    const wl = Math.hypot(wind.x, wind.z) || 1;
+    this.wind = new THREE.Vector3(wind.x / wl, 0, wind.z / wl).multiplyScalar(6 + wl * 1.6);
     for (let i = 0; i < 26; i++) {
       const g = new THREE.Group();
       const n = 5 + Math.floor(rand() * 6), w = 50 + rand() * 90;

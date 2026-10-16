@@ -10,3 +10,13 @@
 #meter-ticks span { white-space: nowrap; }
 a.link { color: #fff; font-size: 12px; opacity: .8; align-self: center; margin-left: 4px; }
 @media (max-width: 700px) { #clubs, #minimap { display: none; } }
+#wind { top: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 6px 14px; font-size: 13px; }
+#wind-arrow { display: block; filter: drop-shadow(0 0 3px rgba(0,0,0,.6)); }
+#wind-speed { font-weight: 700; font-size: 15px; }
+#wind-desc { opacity: .85; font-size: 12px; }
+#shape-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0 0 8px; pointer-events: auto; }
+#shape-row button { font-size: 12px; padding: 4px 9px; }
+#shape-bar { position: relative; width: 150px; height: 10px; border-radius: 5px; background: linear-gradient(90deg, #6fb7ff, rgba(255,255,255,.35) 50%, #ffb36f); border: 1px solid rgba(255,255,255,.6); }
+#shape-bar::after { content: ''; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: #fff; }
+#shape-mark { position: absolute; top: -4px; width: 8px; height: 16px; margin-left: -4px; border-radius: 3px; background: #fff; box-shadow: 0 0 4px #000; }
+#shape-row.hidden { visibility: hidden; }

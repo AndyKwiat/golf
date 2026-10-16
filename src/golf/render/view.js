@@ -228,6 +228,8 @@ export class GolfView {
     const flagGeo = new THREE.PlaneGeometry(0.75, 0.5, 10, 4); flagGeo.translate(0.375, 0, 0);
     this.flag = new THREE.Mesh(flagGeo, new THREE.MeshStandardMaterial({ color: 0xe53935, emissive: 0x7a1010, side: THREE.DoubleSide }));
     this.flag.position.set(cup.x, hy + 2.12, cup.z);
+    this.flag.rotation.y = Math.atan2(-h.wind.z, h.wind.x);   // flag streams downwind
+    this.windStrength = Math.hypot(h.wind.x, h.wind.z);
     this.flagBase = flagGeo.attributes.position.array.slice();
     this.holeGroup.add(pin, this.flag);
     this.pinMarker.position.set(cup.x, hy + 3.6, cup.z);
@@ -241,7 +243,7 @@ export class GolfView {
 
     this.buildTrees(h, xmin, xmax, zmin, zmax);
     this.buildSlopeDots(h);
-    this.sky.build(h.seed, new THREE.Vector3((xmin + xmax) / 2, 0, h.L / 2));
+    this.sky.build(h.seed, new THREE.Vector3((xmin + xmax) / 2, 0, h.L / 2), h.wind);
     this.buildMs = performance.now() - t0;
     this.snap = true;
   }
@@ -503,7 +505,8 @@ export class GolfView {
 
     // flag wave, slope dots
     const fp = this.flag.geometry.attributes.position;
-    for (let i = 0; i < fp.count; i++) { const x0 = this.flagBase[i * 3]; fp.setZ(i, Math.sin(x0 * 6 - this.time * 4) * 0.05 * x0); }
+    const wk = 0.4 + this.windStrength / 8;
+    for (let i = 0; i < fp.count; i++) { const x0 = this.flagBase[i * 3]; fp.setZ(i, Math.sin(x0 * 6 - this.time * (3 + wk * 3)) * 0.05 * wk * x0); }
     fp.needsUpdate = true;
     this.pinMarker.visible = this.camera.position.distanceTo(this.flag.position) > 35;
     this.updateDots();

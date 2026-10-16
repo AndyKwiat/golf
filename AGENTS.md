@@ -2,8 +2,9 @@
 
 Two three.js games sharing one deterministic-sim architecture:
 
-- **Full golf** (`index.html`, `src/golf/`): one random par 3/4/5 hole at a time — fairway, rough,
-  bunkers, ponds, trees (balls bounce off them), 14 clubs, auto-putter on the green. **Cheat mode is
+- **Full golf** (`index.html`, `src/golf/`): one random par 3/4/5 hole at a time — doglegs,
+  fairway, rough, bunkers, ponds (95% of holes, often two), trees (balls bounce off them), strong
+  per-hole wind, draw/fade shot shaping, 14 clubs, auto-putter on the green. **Cheat mode is
   the default** (set power exactly, see the exact flight + roll before you shoot); normal mode is
   the Mario-Golf 3-press meter.
 - **Putting only** (`putting.html`, `src/sim/` + `src/main.js`): the original putting-green game.
@@ -69,7 +70,13 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
 - Height = rolling gaussians + elevation ramp + side banks, flattened toward constants near green
   and tee, + green plateau + green bumps (rescaled so green slope ≤ 12%) − bunker bowls; ponds
   replace terrain inside the blob with a bed below the water `level` (level = lowest shore − 0.15).
-- Flight: gravity + drag `KD|v|v` + lift `KL·spin·|v|²` ⟂ v (up); spin decays (`SPIN_DECAY`).
+- Flight: gravity + drag `KD|v|v` + lift `KL·spin·|v|²` ⟂ v (up) + sidespin force
+  `KL·side·|v|²` horizontal ⟂ v (+side = right/fade, − = left/draw); all computed on the
+  **air-relative** velocity `v − wind`, so wind pushes, holds up and helps the ball. Spin and
+  sidespin decay (`SPIN_DECAY`); sidespin is zeroed at the first bounce. Wind never affects
+  rolling (putts are wind-free). `hole.wind = {x, z}` m/s, 3–13 m/s, from the seed.
+  Calibrated reference: 10 m/s cross ≈ 29 m drift on a drive; head −36 m; full draw/fade ≈ 21 m
+  on a drive (`CURVE_SIDESPIN`).
   Ground contact: reflect with surface restitution `e`, lose tangential speed `tf + 1.5·spin`;
   below `BOUNCE_TO_ROLL` it rolls (putting-game rolling model with per-surface `roll` friction).
 - Trees: pine = cone crown, round = ellipsoid crown, plus trunk cylinder. Entering a crown bounces
@@ -79,10 +86,17 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   power = fraction of 30 m flat-green roll. Lies (`LIE`) scale speed/spin (rough, sand, …).
 - Results: `rest | holed | water | oob`. Water → +1 and drop at the last dry point, walked back
   toward the shot origin until clear of water/sand. OOB → +1, replay from the previous spot.
-- Auto caddie on every new lie (`_newLie`): putter on the green; otherwise the shortest club whose
-  nominal total reaches (driver only from the tee); aim at the cup if in range, else at the
-  centerline one club-length ahead; power by bisection on the real sim so the ball finishes at
-  the pin distance along the aim line.
+- Auto caddie (`_caddie`, on every new lie, club change and curve change): putter on the green;
+  otherwise the shortest club whose nominal total reaches (driver only from the tee). Target =
+  cup if in range, else the centerline one club-length ahead. Power by bisection on the real sim;
+  then the aim is corrected (3 sim iterations) for wind + curve drift so the default shot really
+  finishes on the target line — that's what keeps cheat mode easy in strong wind. On fairway
+  targets it keeps full power if a full shot still finishes in the fairway.
+- Generator layout: par 4s dogleg 80% of the time (35–85 m offset), par 5s always double-bend
+  (often S). `params.corners = [{z, dir}]` records bends; tree clusters guard the inside corners.
+  Pond candidates by type — dogleg corner, front of green, beside green, crossing the fairway,
+  beside the landing zone — kept if they clear the green outline (+fringe +2.5 m), the tee and
+  each other; max 2 per hole.
 
 ## Game / input model (both games)
 
@@ -91,21 +105,24 @@ as `{tick, action}`; `GolfGame.replay(game.initial, game.log, tick)` (or `Game.r
 the exact state. Held keys are sampled once per tick in main.js and turned into actions.
 
 Golf actions: `setAim {aim}` · `setPower {power}` · `setClub {club, reaim?}` (re-suggests
-aim/power) · `cycleClub {dir}` · `setMode {mode}` · `newHole {seed}` · `shoot {aim?, power?, club?}`
+aim/power) · `cycleClub {dir}` · `setCurve {curve ∈ [-1,1], reaim?}` (resets to 0 on each new
+lie) · `setMode {mode}` · `newHole {seed}` · `shoot {aim?, power?, club?, curve?}`
 · `swingPress` (normal mode meter, same as putting). Phases: `aim → swing → moving → aim … → holed`.
 Cheat preview = `game.preview()` = `simulateShot(launchFor(...))` with the same `stepShot` — exact.
 
 ## Browser agent API (`window.__golf`, golf page)
 
 URL: `?seed=N&mode=normal&paused=1&cam=overhead&grid=0&hud=0` (mode defaults to cheat).
-`step(n)` · `settle()` · `shoot(aim?, power?, club?)` (club = index or `'7i'`) · `autoShot()` ·
+`step(n)` · `settle()` · `shoot(aim?, power?, club?, curve?)` (club = index or `'7i'`) ·
+`setCurve(c, reaim = true)` · `autoShot()` ·
 `playHole()` · `setClub(c)` · `setAim(a)` · `aimAtHole()` · `setPower(p)` · `setMode(m)` ·
 `newHole(seed?)` · `dispatch(a)` · `preview(...)` · `state()` · `setCamera('auto'|'overhead', zoom)`
 · `setGrid(b)` · `setHud(b)` · `advanceVisuals(secs)` (clouds/flag only) · `screenshot()` ·
 `render()` · `pause()/resume()` · `buildMs()`. Also `game`, `view`, `CLUBS` objects for poking.
 The putting page has the same style API (`putt`, `autoPutt`, `newGreen`, …).
 
-Keys (golf): ←/→ aim (Shift fine), ↑/↓ power (cheat), Q/E or [ ] club, Space shoot / meter,
+Keys (golf): ←/→ aim (Shift fine), ↑/↓ power (cheat), Q/E or [ ] club, Z/X draw/fade (±25%,
+re-aims), Space shoot / meter,
 Enter shoot, N new hole, M mode, C overhead cam, G grid, H hud, P pause; click terrain or
 minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
 
@@ -133,6 +150,8 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
 - Lines are `Line2`/`LineMaterial` (pixel widths); update `resolution` on resize.
 - Ball, markers and halo are scaled up with camera distance (ball ×2.5+ in flight) so they're
   trackable. `logarithmicDepthBuffer` is on (near 0.05, far 9000).
+- Wind HUD arrow is drawn relative to the camera (up = blowing away from you); in overhead mode
+  screen-up is `camera.up`. The flag streams downwind and clouds drift along `hole.wind`.
 - Mountains/hills are vertex-colored rings with 8 rows per column (fewer rows = streaky shading).
 
 ## Tips

@@ -11,6 +11,7 @@ import { botPlayHole } from '../src/golf/sim/bot.js';
 function flatHole(seed = 3, edit = () => {}) {
   const p = cleanParams(generateHoleParams(seed));
   p.base = []; p.elev = 0; p.bunkers = []; p.ponds = []; p.trees = []; p.green.bumps = []; p.green.lift = 0;
+  p.wind = { x: 0, z: 0 }; p.ctrl = [[0, 0], [p.L, 0]]; p.corners = []; p.green.x = 0;
   edit(p);
   return p;
 }
@@ -28,14 +29,17 @@ test('generated holes are sane across many seeds', () => {
     assert.equal(h.surface(h.tee.x, h.tee.z), 'tee', `seed ${s} tee`);
     assert.equal(h.surface(h.cup.x, h.cup.z), 'green', `seed ${s} cup`);
     assert.ok(h.slope(h.cup.x, h.cup.z) < 0.08, `seed ${s} cup slope`);
-    const range = { 3: [120, 200], 4: [320, 440], 5: [455, 560] }[h.par];
-    assert.ok(h.length > range[0] && h.length < range[1] + 15, `seed ${s} par ${h.par} length ${h.length}`);
+    const range = { 3: [120, 205], 4: [320, 470], 5: [455, 600] }[h.par];
+    assert.ok(h.length > range[0] && h.length < range[1], `seed ${s} par ${h.par} length ${h.length}`);
     for (const t of h.trees) assert.equal(h.surface(t.x, t.z), 'rough', `seed ${s} tree ${t.id} not in rough`);
     if (h.ponds.length) water++;
+    for (const p of h.ponds) assert.notEqual(h.surface(h.cup.x, h.cup.z), 'water');
+    const w = Math.hypot(h.wind.x, h.wind.z);
+    assert.ok(w >= 3 && w <= 13, `seed ${s} wind ${w}`);
     if (h.bunkers.length) sand++;
   }
   assert.deepEqual([...pars].sort(), [3, 4, 5]);
-  assert.ok(water >= 10 && sand >= 30, `water ${water} sand ${sand}`);
+  assert.ok(water >= 26 && sand >= 30, `water ${water} sand ${sand}`);
 });
 
 test('clubs carry their nominal distance at full power on flat ground', () => {
@@ -160,4 +164,59 @@ test('bot can play holes out in a sensible number of strokes', () => {
     assert.equal(g.phase, 'holed', `seed ${seed}`);
     assert.ok(strokes <= g.hole.par + 2, `seed ${seed}: ${strokes} on par ${g.hole.par}`);
   }
+});
+
+test('wind: tailwind carries further, headwind shorter, crosswind drifts downwind', () => {
+  const carry = wind => {
+    const g = new GolfGame({ holeParams: flatHole(3, p => { p.wind = wind; }) });
+    const r = g.preview(Math.PI / 2, 1, 0, 0);
+    return r.landing;
+  };
+  const calm = carry({ x: 0, z: 0 }), head = carry({ x: 0, z: -10 }), tail = carry({ x: 0, z: 10 }), cross = carry({ x: 10, z: 0 });
+  assert.ok(head.z < calm.z - 20, `head ${head.z} vs ${calm.z}`);
+  assert.ok(tail.z > calm.z + 10, `tail ${tail.z} vs ${calm.z}`);
+  assert.ok(cross.x > 15, `cross drift ${cross.x}`);
+  assert.ok(Math.abs(calm.x) < 1e-9);
+});
+
+test('wind does not affect putts', () => {
+  const a = new GolfGame({ holeParams: flatHole(3) }), b = new GolfGame({ holeParams: flatHole(3, p => { p.wind = { x: 12, z: 0 }; }) });
+  const pa = a.preview(Math.PI / 2, 0.5, PUTTER), pb = b.preview(Math.PI / 2, 0.5, PUTTER);
+  assert.deepEqual(pa.end, pb.end);
+});
+
+test('draw curves left (+x from the tee), fade curves right (-x)', () => {
+  const g = new GolfGame({ holeParams: flatHole(3) });
+  const draw = g.preview(Math.PI / 2, 1, 0, -1).landing, fade = g.preview(Math.PI / 2, 1, 0, 1).landing, straight = g.preview(Math.PI / 2, 1, 0, 0).landing;
+  assert.ok(draw.x > 10 && fade.x < -10, `draw ${draw.x} fade ${fade.x}`);
+  assert.ok(Math.abs(draw.x + fade.x) < 1e-6, 'symmetric');
+  assert.ok(Math.abs(straight.x) < 1e-9);
+});
+
+test('auto caddie compensates for wind: default shot finishes on its target line', () => {
+  for (const wind of [{ x: 12, z: 0 }, { x: -9, z: 6 }, { x: 5, z: -10 }]) {
+    const g = new GolfGame({ holeParams: flatHole(3, p => { p.wind = wind; }) });
+    const t = g.suggestTarget(g.club), b = g.ball, r = g.preview();
+    const tAng = Math.atan2(t.z - b.z, t.x - b.x), eAng = Math.atan2(r.end.z - b.z, r.end.x - b.x);
+    const miss = Math.abs(Math.sin(eAng - tAng)) * Math.hypot(r.end.x - b.x, r.end.z - b.z);
+    assert.ok(miss < 3, `wind ${JSON.stringify(wind)}: ${miss.toFixed(1)} m off line`);
+  }
+});
+
+test('auto caddie: the default tee shot never finds water or out of bounds', () => {
+  for (let seed = 1; seed <= 30; seed++) {
+    const g = new GolfGame({ seed });
+    const r = g.preview();
+    assert.ok(r.result !== 'water' && r.result !== 'oob', `seed ${seed}: ${r.result}`);
+  }
+});
+
+test('replay includes curve actions', () => {
+  const g = new GolfGame({ seed: 33 });
+  g.dispatch({ type: 'setCurve', curve: -0.5 }).run(2);
+  g.dispatch({ type: 'shoot' }); g.runUntilSettled();
+  assert.equal(g.lastShot.curve, -0.5);
+  assert.equal(g.curve, 0, 'curve resets on the new lie');
+  const r = GolfGame.replay(g.initial, g.log, g.tick);
+  assert.deepEqual(r.snapshot(), g.snapshot());
 });

@@ -21,6 +21,8 @@ const keys = new Set();
 function newHole(s = randomSeed()) { game.dispatch({ type: 'newHole', seed: s }); }
 function toggleMode() { game.dispatch({ type: 'setMode', mode: game.mode === 'normal' ? 'cheat' : 'normal' }); }
 function cycleCam() { view.camMode = view.camMode === 'auto' ? 'overhead' : 'auto'; view.zoom = 1; }
+/** Change draw/fade; the caddie re-aims so the shaped shot still finishes on the target line. */
+function setCurve(c) { if (!game.club.putter) game.dispatch({ type: 'setCurve', curve: Math.round(Math.max(-1, Math.min(1, c)) * 4) / 4, reaim: true }); }
 function primary() {
   if (game.phase === 'holed') return newHole();
   if (game.mode === 'cheat') game.dispatch({ type: 'shoot' });
@@ -39,6 +41,8 @@ addEventListener('keydown', e => {
     case 'g': view.setGrid(!view.showGrid); break;
     case 'h': $('hud').classList.toggle('hidden'); break;
     case 'p': paused = !paused; break;
+    case 'z': setCurve(game.curve - 0.25); break;
+    case 'x': setCurve(game.curve + 0.25); break;
     case 'q': case '[': game.dispatch({ type: 'cycleClub', dir: -1 }); break;
     case 'e': case ']': game.dispatch({ type: 'cycleClub', dir: 1 }); break;
   }
@@ -85,6 +89,8 @@ $('btn-mode').onclick = () => toggleMode();
 $('btn-cam').onclick = () => cycleCam();
 $('btn-grid').onclick = () => view.setGrid(!view.showGrid);
 $('btn-shoot').onclick = () => game.dispatch({ type: 'shoot' });
+$('btn-draw').onclick = () => setCurve(game.curve - 0.25);
+$('btn-fade').onclick = () => setCurve(game.curve + 0.25);
 for (const b of document.querySelectorAll('button')) b.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') e.preventDefault(); });
 
 // Club list
@@ -130,11 +136,23 @@ function drawMinimap(preview) {
   }
   const [cx, cy] = mmT.toS(game.hole.cup.x, game.hole.cup.z);
   mmx.fillStyle = '#e53935'; mmx.beginPath(); mmx.arc(cx, cy, 3.5, 0, 7); mmx.fill();
+  // wind arrow (top-left corner of the map)
+  const w = game.hole.wind, ws = Math.hypot(w.x, w.z);
+  if (ws > 0.1) {
+    const [x0, y0] = mmT.toS(0, 0), [x1, y1] = mmT.toS(w.x / ws, w.z / ws);
+    const dx = (x1 - x0), dy = (y1 - y0), L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, cx0 = 22, cy0 = 22, R = 14;
+    mmx.fillStyle = 'rgba(0,0,0,0.45)'; mmx.beginPath(); mmx.arc(cx0, cy0, 19, 0, 7); mmx.fill();
+    mmx.strokeStyle = '#9fe0ff'; mmx.fillStyle = '#9fe0ff'; mmx.lineWidth = 2.5;
+    mmx.beginPath(); mmx.moveTo(cx0 - ux * R, cy0 - uy * R); mmx.lineTo(cx0 + ux * R, cy0 + uy * R); mmx.stroke();
+    mmx.beginPath(); mmx.moveTo(cx0 + ux * R, cy0 + uy * R); mmx.lineTo(cx0 + ux * (R - 7) - uy * 5, cy0 + uy * (R - 7) + ux * 5); mmx.lineTo(cx0 + ux * (R - 7) + uy * 5, cy0 + uy * (R - 7) - ux * 5); mmx.fill();
+  }
   const [bx, by] = mmT.toS(game.ball.x, game.ball.z);
   mmx.fillStyle = '#fff'; mmx.strokeStyle = '#000'; mmx.lineWidth = 1; mmx.beginPath(); mmx.arc(bx, by, 3.5, 0, 7); mmx.fill(); mmx.stroke();
 }
 function mapAim(e) { const r = mm.getBoundingClientRect(); aimAt(mmT.toW((e.clientX - r.left) * mm.width / r.width, (e.clientY - r.top) * mm.height / r.height)); }
 mm.addEventListener('pointerdown', e => { mapDrag = true; mapAim(e); });
+
+function THREE_Vec(cam) { const e = cam.matrixWorld.elements; return { x: -e[8], y: -e[9], z: -e[10] }; }
 
 // ------------------------------------------------------------------ HUD
 let toastTimer = 0;
@@ -192,6 +210,21 @@ function updateHud(preview) {
     $('meter-ticks').innerHTML = tk.slice(0, 3).map((d, i) => `<div style="left:${vToPct((i + 1) * 0.25)}%"><span>${d.toFixed(d < 20 ? 1 : 0)}m</span></div>`).join('')
       + `<div style="left:calc(100% - 1px)"><span style="transform:translateX(-110%)">${tk[3].toFixed(0)}m</span></div>`;
   }
+  // wind: arrow relative to the camera view (up = blowing away from you), plus help/hurt vs aim
+  const w = h.wind, ws = Math.hypot(w.x, w.z);
+  const cam = view.camera, fwd0 = THREE_Vec(cam), fwd = Math.hypot(fwd0.x, fwd0.z) > 0.2 ? fwd0 : cam.up, fl = Math.hypot(fwd.x, fwd.z) || 1;  // overhead: screen-up = camera.up
+  const fx = fwd.x / fl, fz = fwd.z / fl, rx = -fz, rz = fx;               // screen right = (-fz, fx)
+  const sAng = Math.atan2(w.x * rx + w.z * rz, w.x * fx + w.z * fz);       // 0 = away from camera
+  $('wind-arrow').style.transform = `rotate(${sAng}rad)`;   // svg arrow points up at 0
+  $('wind-speed').textContent = `Wind ${ws.toFixed(1)} m/s`;
+  const ax = Math.cos(g.aim), az = Math.sin(g.aim), along = w.x * ax + w.z * az, cross = w.x * -az + w.z * ax;
+  $('wind-desc').textContent = `${Math.abs(along) < 0.5 ? '' : along > 0 ? `helping ${along.toFixed(0)}` : `into ${(-along).toFixed(0)}`}${Math.abs(along) >= 0.5 && Math.abs(cross) >= 0.5 ? ' · ' : ''}${Math.abs(cross) < 0.5 ? '' : cross > 0 ? `→ ${cross.toFixed(0)} to the right` : `← ${(-cross).toFixed(0)} to the left`}`;
+  // shot shape
+  const showShape = g.phase === 'aim' && !g.club.putter;
+  $('shape-row').classList.toggle('hidden', !showShape);
+  $('shape-mark').style.left = `${(g.curve + 1) * 50}%`;
+  $('btn-draw').classList.toggle('on', g.curve < 0); $('btn-fade').classList.toggle('on', g.curve > 0);
+
   const cheat = g.mode === 'cheat';
   meter.classList.toggle('interactive', cheat);
   $('cheat-row').style.display = cheat && g.phase === 'aim' ? 'block' : 'none';
@@ -200,7 +233,8 @@ function updateHud(preview) {
   if (cheat) {
     marker.style.display = 'none'; pw.style.display = 'none';
     fill.style.width = (vToPct(g.power) - vToPct(0)) + '%';
-    let txt = `${g.club.name} · Power ${(g.power * 100).toFixed(1)}%`;
+    const shape = g.club.putter || !g.curve ? '' : ` · ${g.curve < 0 ? 'draw' : 'fade'} ${Math.abs(g.curve * 100).toFixed(0)}%`;
+    let txt = `${g.club.name} · Power ${(g.power * 100).toFixed(1)}%${shape}`;
     if (preview && g.phase === 'aim') {
       const carry = preview.landing ? Math.hypot(preview.landing.x - g.ball.x, preview.landing.z - g.ball.z) : 0;
       const tot = Math.hypot(preview.end.x - g.ball.x, preview.end.z - g.ball.z);
@@ -208,7 +242,7 @@ function updateHud(preview) {
       txt += ` — ${carry > 1 ? `carry ${carry.toFixed(0)} m, ` : ''}total ${tot.toFixed(tot < 20 ? 1 : 0)} m → ${endLie}${preview.treeHits ? ' (hits tree)' : ''}`;
     }
     $('meter-label').textContent = txt;
-    $('help').textContent = '←/→ or click: aim (Shift fine) · ↑/↓ or drag bar: power · Q/E: club · Enter/Space: shoot';
+    $('help').textContent = '←/→ or click: aim (Shift fine) · ↑/↓ or drag bar: power · Q/E: club · Z/X: draw/fade · Enter/Space: shoot';
   } else {
     const sw = g.swing;
     if (sw) {
@@ -220,7 +254,7 @@ function updateHud(preview) {
       fill.style.width = '0%'; marker.style.display = 'none'; pw.style.display = 'none';
       $('meter-label').textContent = `${g.club.name}${g.club.putter ? '' : ` · full carry ≈ ${tk[3].toFixed(0)} m`}`;
     }
-    $('help').textContent = '←/→ or click: aim (Shift fine) · Q/E: club · Space: start / set power / hit · wheel: zoom';
+    $('help').textContent = '←/→ or click: aim (Shift fine) · Q/E: club · Z/X: draw/fade · Space: start / set power / hit';
   }
   if (g.phase === 'holed') $('help').textContent = 'Space / N: new hole';
 }
@@ -229,7 +263,7 @@ function updateHud(preview) {
 let previewKey = '', preview = null;
 function updatePreview() {
   if (game.mode !== 'cheat' || game.phase !== 'aim') { previewKey = ''; preview = null; view.setPreview(null); return; }
-  const key = `${game.seed}|${game.ball.x}|${game.ball.z}|${game.aim}|${game.power}|${game.clubId}`;
+  const key = `${game.seed}|${game.ball.x}|${game.ball.z}|${game.aim}|${game.power}|${game.clubId}|${game.curve}`;
   if (key === previewKey) return;
   previewKey = key;
   preview = game.preview();
@@ -266,11 +300,13 @@ window.__golf = {
   setPower(power) { game.dispatch({ type: 'setPower', power }); return this.step(1); },
   /** club: index or short name ('7i', 'Dr', 'Pt'...) */
   setClub(club) { const id = typeof club === 'string' ? CLUBS.findIndex(c => c.short === club) : club; game.dispatch({ type: 'setClub', club: id }); return this.step(1); },
-  shoot(aim, power, club) { const id = typeof club === 'string' ? CLUBS.findIndex(c => c.short === club) : club; game.dispatch({ type: 'shoot', aim, power, club: id }); return this.settle(); },
+  shoot(aim, power, club, curve) { const id = typeof club === 'string' ? CLUBS.findIndex(c => c.short === club) : club; game.dispatch({ type: 'shoot', aim, power, club: id, curve }); return this.settle(); },
+  /** curve in [-1,1]: -1 full draw, +1 full fade. reaim (default true) lets the caddie re-aim. */
+  setCurve(curve, reaim = true) { game.dispatch({ type: 'setCurve', curve, reaim }); return this.step(1); },
   /** Bot picks and plays the best shot it can find (exact sim search). */
   autoShot() { const s = botShot(game); return this.shoot(s.aim, s.power, s.clubId); },
   playHole() { botPlayHole(game); handleEvents(); draw(1, DT, true); return game.snapshot(); },
-  preview(aim, power, club) { const r = game.preview(aim, power, club); return { result: r.result, end: r.end, landing: r.landing, ticks: r.ticks, treeHits: r.treeHits }; },
+  preview(aim, power, club, curve) { const r = game.preview(aim, power, club, curve); return { result: r.result, end: r.end, landing: r.landing, ticks: r.ticks, treeHits: r.treeHits }; },
   state() { return game.snapshot(); },
   setCamera(mode, zoom = 1) { view.camMode = mode; view.zoom = zoom; draw(1, 0, true); },
   setGrid(on) { view.setGrid(on); draw(1, 0, true); },

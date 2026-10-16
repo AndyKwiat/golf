@@ -41,6 +41,7 @@ export class Hole {
       seed: params.seed, par: params.par, L: params.L, ctrl: params.ctrl, fw: params.fairway,
       roughW: params.roughW, base: params.base, elev: params.elev, green: params.green,
       tee: params.tee, bunkers: params.bunkers, ponds: params.ponds, trees: params.trees, cup: params.cup,
+      wind: params.wind || { x: 0, z: 0 },
     });
     for (const b of this.bunkers) b._bound = blobBound(b);
     for (const p of this.ponds) p._bound = blobBound(p);
@@ -195,10 +196,25 @@ export function generateHoleParams(seed) {
   const par = [3, 4, 5][Math.floor(rand() * 3)];
   const L = par === 3 ? U(125, 195) : par === 4 ? U(325, 430) : U(460, 540);
 
+  // Centerline control points [z, x]. Doglegs: par 4s usually bend once, par 5s bend twice
+  // (often an S). corners[] records each bend (z, turn direction) for hazards/trees.
   let ctrl;
-  if (par === 3) ctrl = [[0, 0], [L, U(-14, 14)]];
-  else if (par === 4) { const xa = U(-10, 10); ctrl = [[0, 0], [L * U(0.55, 0.65), xa], [L, xa + sign() * U(15, 50)]]; }
-  else { const xa = U(-15, 15), xb = xa + sign() * U(15, 45); ctrl = [[0, 0], [L * U(0.35, 0.45), xa], [L * U(0.68, 0.76), xb], [L, xb + sign() * U(5, 35)]]; }
+  const corners = [];
+  if (par === 3) ctrl = [[0, 0], [L, U(-20, 20)]];
+  else if (par === 4) {
+    const xa = U(-8, 8);
+    if (rand() < 0.8) {
+      const dir = sign(), za = L * U(0.55, 0.66);
+      ctrl = [[0, 0], [za, xa], [L, xa + dir * U(35, 85)]];
+      corners.push({ z: za, dir });
+    } else ctrl = [[0, 0], [L * 0.6, xa], [L, xa + U(-15, 15)]];
+  } else {
+    const d1 = sign(), d2 = rand() < 0.65 ? -d1 : d1;
+    const z1 = L * U(0.36, 0.44), z2 = L * U(0.68, 0.76);
+    const x1 = d1 * U(12, 35), x2 = x1 + d2 * U(30, 70);
+    ctrl = [[0, 0], [z1, x1], [z2, x2], [L, x2 + sign() * U(10, 40)]];
+    corners.push({ z: z1, dir: Math.sign(x2 - x1) || 1 }, { z: z2, dir: Math.sign(ctrl[3][1] - x2) || 1 });
+  }
 
   const fairway = {
     w: U(13, 19), z0: par === 3 ? L - 45 : U(55, 95), z1: L - 6,
@@ -244,28 +260,51 @@ export function generateHoleParams(seed) {
       params.bunkers.push({ x: tmp.cx(z) + lat * Math.sqrt(1 + d * d), z, R0: U(4, 7), rot: atan2(1, d), sx: U(1.5, 2.6), harm: makeHarm(rand, 3, 0.15), depth: 0.6 });
     }
   }
-  // ponds
-  if (rand() < 0.6) {
-    const kind = par === 3 ? (rand() < 0.6 ? 'front' : 'side') : (par === 5 && rand() < 0.35 ? 'cross' : 'side');
-    let p;
-    if (kind === 'front') {
-      const z = L - R0 - U(12, 22), d = tmp.cxd(z);
-      p = { x: tmp.cx(z), z, R0: U(8, 12), rot: atan2(1, d) + PI / 2, sx: U(1.6, 2.4) };
-    } else if (kind === 'cross') {
-      const z = L * U(0.45, 0.6), d = tmp.cxd(z);
-      p = { x: tmp.cx(z), z, R0: U(9, 12), rot: atan2(1, d) + PI / 2, sx: U(2.8, 3.6) };
-    } else {
-      const z = L * U(0.35, 0.85), d = tmp.cxd(z), side = sign();
-      const R = U(10, 18);
-      p = { x: tmp.cx(z) + side * (fairway.w * 0.6 + R) * Math.sqrt(1 + d * d), z, R0: R, rot: atan2(1, d), sx: U(1.4, 2.4) };
-    }
+  // Water hazards: build a list of candidate ponds by hole type, keep the ones that fit.
+  const pondCands = [];
+  const along = z => atan2(1, tmp.cxd(z));                    // direction of play at z (angle in xz)
+  const at = (z, latOff) => { const d = tmp.cxd(z); return { x: tmp.cx(z) + latOff * Math.sqrt(1 + d * d), z }; };
+  const greenFront = () => { const R = U(7, 11), z = L - R0 - R - U(3, 10); return { ...at(z, U(-4, 4)), R0: R, rot: along(z) + PI / 2, sx: U(1.6, 2.6) }; };
+  const greenSide = () => {
+    const th = approach + PI + sign() * U(0.9, 1.9), R = U(8, 13), r = R0 * 1.15 + FRINGE_WIDTH + 3 + R;
+    return { x: green.x + cos(th) * r, z: green.z + sin(th) * r, R0: R, rot: th + PI / 2, sx: U(1.3, 2) };
+  };
+  const sidePond = (z, side) => { const R = U(10, 18); return { ...at(z, side * (fairway.w * 0.55 + R)), R0: R, rot: along(z), sx: U(1.4, 2.4) }; };
+  const cornerPond = c => { const z = c.z - U(-5, 25), R = U(11, 18); return { ...at(z, c.dir * (fairway.w * U(0.3, 0.8) + R * 0.75)), R0: R, rot: along(z), sx: U(1.2, 1.9) }; };
+  const crossPond = z => ({ ...at(z, 0), R0: U(8, 11), rot: along(z) + PI / 2, sx: U(3, 4) });
+  if (par === 3) {
+    pondCands.push(rand() < 0.7 ? greenFront() : greenSide());
+    if (rand() < 0.3) pondCands.push(greenSide());
+  } else if (par === 4) {
+    if (corners.length && rand() < 0.65) pondCands.push(cornerPond(corners[0]));
+    if (rand() < 0.45) pondCands.push(rand() < 0.5 ? greenFront() : greenSide());
+    if (rand() < 0.3) pondCands.push(sidePond(U(180, 240), sign()));
+  } else {
+    if (rand() < 0.5) pondCands.push(crossPond(L * U(0.52, 0.64)));
+    else pondCands.push(cornerPond(corners[Math.floor(rand() * corners.length)]));
+    if (rand() < 0.45) pondCands.push(rand() < 0.5 ? greenFront() : greenSide());
+  }
+  if (rand() < 0.5) pondCands.push(sidePond(L * U(0.3, 0.8), sign()));   // fallback / bonus
+  // green outline sample points, so ponds can come close to the green without touching it
+  green._bound = blobBound(green);
+  const gEdge = [];
+  for (let i = 0; i < 48; i++) {
+    const th = (i / 48) * PI * 2;
+    let f = 1; for (const hm of green.harm) f += hm.a * cos(hm.k * th + hm.p);
+    const r = R0 * f + FRINGE_WIDTH + 2.5;
+    gEdge.push([green.x + cos(th) * r, green.z + sin(th) * r]);
+  }
+  let kept = 0;
+  for (const p of pondCands) {
+    if (kept >= 2) break;
     p.harm = makeHarm(rand, 3, 0.12);
     p.level = 0;
     p._bound = blobBound(p);
-    const okGreen = blobDist(p, green.x, green.z) > R0 + 6;
-    const okTee = blobDist(p, 0, 0) > 30;
-    if (okGreen && okTee) {
-      params.ponds.push(p);
+    const okGreen = blobDist(p, green.x, green.z) > 0 && gEdge.every(([x, z]) => blobDist(p, x, z) > 0);
+    const okTee = len2(p.x, p.z) > p._bound + 35;
+    const okOthers = params.ponds.every(q => len2(p.x - q.x, p.z - q.z) > (p._bound + q._bound) * 0.8);
+    if (okGreen && okTee && okOthers) {
+      params.ponds.push(p); kept++;
       params.bunkers = params.bunkers.filter(b => blobDist(p, b.x, b.z) > b.R0 * Math.max(1, b.sx) + 3);
     }
   }
@@ -334,8 +373,20 @@ export function generateHoleParams(seed) {
       addTree(hole.cx(z) + side * (fairway.w + U(2, roughW)) * Math.sqrt(1 + d * d), z);
     }
   }
+  // Guard the inside of each dogleg so you can't just bomb it over the corner for free.
+  for (const c of corners) {
+    const n = 8 + Math.floor(rand() * 8);
+    for (let i = 0; i < n; i++) {
+      const z = c.z + U(-55, 15), d = tmp.cxd(z);
+      addTree(hole.cx(z) + c.dir * (fairway.w + U(1, roughW + 8)) * Math.sqrt(1 + d * d), z);
+    }
+  }
   for (let i = 0; i < 14; i++) addTree(green.x + U(-45, 45), L + R0 + U(10, 40));
   params.trees = trees;
+  // Wind: strong and per-hole. 3-13 m/s from any direction.
+  const wa = rand() * PI * 2, ws = U(3, 13);
+  params.wind = { x: cos(wa) * ws, z: sin(wa) * ws };
+  params.corners = corners;
   return params;
 }
 

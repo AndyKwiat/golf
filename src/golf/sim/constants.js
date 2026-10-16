@@ -37,6 +37,10 @@ export const LIE = {
 
 export const PUTT_MAX_FLAT = 30;        // putter: power 1 rolls 30 m on flat green
 
+// Shot shape: curve = +-1 gives this much sidespin (same units as backspin/lift coefficient).
+// Full draw/fade bends a driver ~21 m, a 7 iron ~9 m.
+export const CURVE_SIDESPIN = 0.05;
+
 export const FRINGE_WIDTH = 1.2;
 
 export const SWING = { upRate: 1 / 1.3, returnRate: 1 / 0.8, zoneMin: -0.15, perfect: 0.02, errPerUnit: 0.3 };

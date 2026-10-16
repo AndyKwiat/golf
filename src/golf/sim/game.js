@@ -2,26 +2,30 @@
 // at the start of the next step(), logged with its tick; Game.replay rebuilds any session.
 //
 // Phases: 'aim' -> ('swing' in normal mode) -> 'moving' -> 'aim' ... -> 'holed'
-import { DT, SWING, G, SURF, LIE, PUTT_MAX_FLAT, MAX_SHOT_TICKS } from './constants.js';
+import { DT, SWING, G, SURF, LIE, PUTT_MAX_FLAT, MAX_SHOT_TICKS, CURVE_SIDESPIN } from './constants.js';
 import { CLUBS, PUTTER, DRIVER, nominalTotal } from './clubs.js';
 import { Hole, generateHole } from './hole.js';
 import { stepShot, simulateShot, newShotCtx } from './ball.js';
 import { len2, sin, cos, atan2 } from '../../sim/math.js';
 
-/** Build the launched ball for a club/aim/power from a resting position and lie. */
-export function launchBall(hole, pos, club, aim, power, lie) {
+/**
+ * Build the launched ball for a club/aim/power from a resting position and lie.
+ * curve in [-1, 1]: -1 = full draw (curves left), +1 = full fade (curves right). Ignored for putts.
+ */
+export function launchBall(hole, pos, club, aim, power, lie, curve = 0) {
   const p = Math.min(1, Math.max(0, power));
   const y = hole.height(pos.x, pos.z);
   if (club.putter) {
     const mu = SURF[lie === 'green' ? 'green' : 'green'].roll;
     const v = Math.sqrt(2 * mu * G * p * PUTT_MAX_FLAT);
-    return { x: pos.x, y, z: pos.z, vx: cos(aim) * v, vy: 0, vz: sin(aim) * v, spin: 0, air: false };
+    return { x: pos.x, y, z: pos.z, vx: cos(aim) * v, vy: 0, vz: sin(aim) * v, spin: 0, side: 0, air: false };
   }
   const L = LIE[lie] || LIE.rough;
   const sm = club.wedge && L.wedgeSpeed ? L.wedgeSpeed : L.speed;
   const v = club.speed * Math.sqrt(p) * sm;   // sqrt: carry is roughly proportional to power
   const vh = v * cos(club.angle), vy = v * sin(club.angle);
-  return { x: pos.x, y: y + 0.001, z: pos.z, vx: cos(aim) * vh, vy, vz: sin(aim) * vh, spin: club.spin * L.spin, air: true };
+  const side = Math.max(-1, Math.min(1, curve)) * CURVE_SIDESPIN * L.spin;
+  return { x: pos.x, y: y + 0.001, z: pos.z, vx: cos(aim) * vh, vy, vz: sin(aim) * vh, spin: club.spin * L.spin, side, air: true };
 }
 
 export class GolfGame {
@@ -41,7 +45,7 @@ export class GolfGame {
     this.hole = holeParams ? new Hole(holeParams) : generateHole(seed);
     this.seed = this.hole.seed;
     const t = this.hole.tee;
-    this.ball = { x: t.x, y: this.hole.height(t.x, t.z), z: t.z, vx: 0, vy: 0, vz: 0, spin: 0, air: false };
+    this.ball = { x: t.x, y: this.hole.height(t.x, t.z), z: t.z, vx: 0, vy: 0, vz: 0, spin: 0, side: 0, air: false };
     this.prevBall = { ...this.ball };
     this.shotStart = { x: t.x, z: t.z };
     this.strokes = 0;
@@ -61,10 +65,67 @@ export class GolfGame {
   _newLie() {
     const lie = this.lie;
     const d = this.distToHole();
+    this.curve = 0;
     if (lie === 'green') this.clubId = PUTTER;
     else this.clubId = this.suggestClub(d, lie);
-    this.aim = this.suggestAim(this.club);
-    this.power = this.suggestPower(this.club, d, this.aim);
+    this._caddie();
+  }
+
+  /**
+   * Auto caddie for the current club: aim at the target (cup if reachable, else the fairway
+   * ahead), set power, then correct the aim for wind/curve drift using the real simulator so
+   * the default shot (what cheat mode previews) actually finishes on the target line.
+   */
+  _caddie() {
+    const club = this.club, b = this.ball;
+    const tgt = this.suggestTarget(club);
+    const tAng = atan2(tgt.z - b.z, tgt.x - b.x), tDist = len2(tgt.x - b.x, tgt.z - b.z);
+    this.aim = tAng;
+    this.power = this.suggestPower(club, this.distToHole(), this.aim);
+    if (club.putter) return;
+    for (let it = 0; it < 3; it++) {
+      const r = simulateShot(this.hole, this.launchFor(this.aim, this.power), { recordPath: false });
+      const ex = r.end.x - b.x, ez = r.end.z - b.z;
+      if (len2(ex, ez) < 1) break;
+      let err = atan2(ez, ex) - tAng;
+      err = atan2(sin(err), cos(err));
+      this.aim -= err;
+    }
+    const toCup = tgt.x === this.hole.cup.x && tgt.z === this.hole.cup.z;
+    if (!toCup) {
+      // fairway target: hit it full if a full shot still finishes in the fairway
+      const r = simulateShot(this.hole, this.launchFor(this.aim, 1), { recordPath: false });
+      if (r.result === 'rest' && this.hole.surface(r.end.x, r.end.z) === 'fairway') { this.power = 1; return; }
+    }
+    this.power = this.suggestPower(club, Math.min(this.distToHole(), tDist * 1.02 + 1), this.aim);
+    this._avoidHazards();
+  }
+
+  /**
+   * If the caddie's shot finds water / OOB / sand, search nearby aims and shorter powers for one
+   * that doesn't (preferring fairway/green and staying close to the original plan).
+   */
+  _avoidHazards() {
+    const BAD = { water: 1, oob: 1 };
+    const evalShot = (aim, power) => {
+      const r = simulateShot(this.hole, this.launchFor(aim, power), { recordPath: false });
+      const lie = r.result === 'holed' ? 'green' : r.result === 'rest' ? this.hole.surface(r.end.x, r.end.z) : r.result;
+      return { lie, d: this.hole.distToCup(r.end.x, r.end.z) };
+    };
+    const cur = evalShot(this.aim, this.power);
+    if (!BAD[cur.lie] && cur.lie !== 'sand') return;
+    const rank = { green: 0, fringe: 1, fairway: 1, tee: 1, rough: 3, sand: 6 };
+    let best = null;
+    for (const dp of [1, 0.92, 0.84, 0.75, 0.65, 0.55]) {
+      for (const da of [0, -0.03, 0.03, -0.06, 0.06, -0.1, 0.1]) {
+        const p = this.power * dp, a = this.aim + da, r = evalShot(a, p);
+        if (BAD[r.lie]) continue;
+        const cost = rank[r.lie] * 25 + r.d + Math.abs(da) * 200;
+        if (!best || cost < best.cost) best = { a, p, cost };
+      }
+      if (best && best.cost < 60) break;
+    }
+    if (best) { this.aim = best.a; this.power = Math.round(best.p * 1000) / 1000; }
   }
 
   suggestClub(dist, lie = this.lie) {
@@ -78,20 +139,18 @@ export class GolfGame {
     return pick;
   }
 
-  /** Aim at the cup if in range, else at the centerline point about one club-length ahead. */
-  suggestAim(club) {
+  /** Target point: the cup if in range, else the centerline point about one club-length ahead. */
+  suggestTarget(club) {
     const h = this.hole, b = this.ball;
-    const dCup = this.distToHole();
     const reach = club.putter ? Infinity : nominalTotal(club);
-    if (dCup <= reach * 1.05) return atan2(h.cup.z - b.z, h.cup.x - b.x);
-    let target = null;
+    if (this.distToHole() <= reach * 1.05) return { x: h.cup.x, z: h.cup.z };
     for (let z = b.z; z <= h.L; z += 2) {
       const x = h.cx(z);
-      if (len2(x - b.x, z - b.z) >= reach) { target = { x, z }; break; }
+      if (len2(x - b.x, z - b.z) >= reach) return { x, z };
     }
-    if (!target) target = h.cup;
-    return atan2(target.z - b.z, target.x - b.x);
+    return { x: h.cup.x, z: h.cup.z };
   }
+  suggestAim(club) { const t = this.suggestTarget(club), b = this.ball; return atan2(t.z - b.z, t.x - b.x); }
 
   /**
    * Auto-caddie power: bisection on the real simulation so the ball finishes about `dist` along
@@ -100,7 +159,7 @@ export class GolfGame {
   suggestPower(club, dist, aim = this.aim) {
     const ax = cos(aim), az = sin(aim);
     const along = p => {
-      const r = simulateShot(this.hole, launchBall(this.hole, this.ball, club, aim, p, this.lie), { recordPath: false });
+      const r = simulateShot(this.hole, launchBall(this.hole, this.ball, club, aim, p, this.lie, this.curve), { recordPath: false });
       return (r.end.x - this.ball.x) * ax + (r.end.z - this.ball.z) * az;
     };
     if (!club.putter && dist >= nominalTotal(club) * 1.05) return 1;
@@ -123,12 +182,18 @@ export class GolfGame {
       case 'setClub':
         if (this.phase === 'aim' && a.club >= 0 && a.club < CLUBS.length) {
           this.clubId = a.club;
-          if (a.reaim !== false) { this.aim = this.suggestAim(this.club); this.power = this.suggestPower(this.club, this.distToHole()); }
+          if (a.reaim !== false) this._caddie();
           else this.power = this.suggestPower(this.club, this.distToHole());
         }
         break;
       case 'cycleClub':
         if (this.phase === 'aim') this._apply({ type: 'setClub', club: (this.clubId + a.dir + CLUBS.length) % CLUBS.length, reaim: false });
+        break;
+      case 'setCurve':
+        if (this.phase === 'aim') {
+          this.curve = Math.max(-1, Math.min(1, a.curve));
+          if (a.reaim) this._caddie();
+        }
         break;
       case 'setMode':
         if (this.phase === 'swing') { this.phase = 'aim'; this.swing = null; }
@@ -140,6 +205,7 @@ export class GolfGame {
       case 'shoot': case 'putt':
         if (this.phase === 'aim') {
           if (a.club !== undefined) this.clubId = a.club;
+          if (a.curve !== undefined) this.curve = Math.max(-1, Math.min(1, a.curve));
           this._launch(a.aim ?? this.aim, a.power ?? this.power, 0);
         }
         break;
@@ -167,8 +233,8 @@ export class GolfGame {
   }
 
   /** Launched ball for the current state (what preview and the real shot both use). */
-  launchFor(aim = this.aim, power = this.power, clubId = this.clubId) {
-    return launchBall(this.hole, this.ball, CLUBS[clubId], aim, power, this.lie);
+  launchFor(aim = this.aim, power = this.power, clubId = this.clubId, curve = this.curve) {
+    return launchBall(this.hole, this.ball, CLUBS[clubId], aim, power, this.lie, curve);
   }
 
   _launch(aim, power, accuracy) {
@@ -181,7 +247,7 @@ export class GolfGame {
     this.shotTicks = 0;
     this.phase = 'moving';
     this.tracer = [{ x: this.ball.x, y: this.ball.y, z: this.ball.z }];
-    this.lastShot = { club: this.club.short, aim, power, accuracy, lie, from: { ...this.shotStart }, result: null };
+    this.lastShot = { club: this.club.short, aim, power, curve: this.club.putter ? 0 : this.curve, accuracy, lie, from: { ...this.shotStart }, result: null };
     this.events.push({ type: 'shot', club: this.club.short, power, accuracy, strokes: this.strokes });
   }
 
@@ -218,7 +284,7 @@ export class GolfGame {
     ls.carry = this.shotCtx.landing ? len2(this.shotCtx.landing.x - ls.from.x, this.shotCtx.landing.z - ls.from.z) : 0;
     ls.total = len2(this.ball.x - ls.from.x, this.ball.z - ls.from.z);
     ls.treeHits = this.shotCtx.treeHits;
-    this.ball.vx = this.ball.vy = this.ball.vz = 0; this.ball.air = false; this.ball.spin = 0;
+    this.ball.vx = this.ball.vy = this.ball.vz = 0; this.ball.air = false; this.ball.spin = 0; this.ball.side = 0;
     if (result === 'holed') {
       this.ball.x = this.hole.cup.x; this.ball.z = this.hole.cup.z;
       this.ball.y = this.hole.height(this.ball.x, this.ball.z);
@@ -245,7 +311,7 @@ export class GolfGame {
   }
 
   _placeBall(p) {
-    this.ball = { x: p.x, y: this.hole.height(p.x, p.z), z: p.z, vx: 0, vy: 0, vz: 0, spin: 0, air: false };
+    this.ball = { x: p.x, y: this.hole.height(p.x, p.z), z: p.z, vx: 0, vy: 0, vz: 0, spin: 0, side: 0, air: false };
     this.prevBall = { ...this.ball };
   }
 
@@ -274,8 +340,8 @@ export class GolfGame {
   }
 
   /** Exact predicted shot from the current position (what cheat mode draws). */
-  preview(aim = this.aim, power = this.power, clubId = this.clubId) {
-    return simulateShot(this.hole, this.launchFor(aim, power, clubId));
+  preview(aim = this.aim, power = this.power, clubId = this.clubId, curve = this.curve) {
+    return simulateShot(this.hole, this.launchFor(aim, power, clubId, curve));
   }
 
   takeEvents() { const e = this.events; this.events = []; return e; }
@@ -284,7 +350,7 @@ export class GolfGame {
     return {
       tick: this.tick, seed: this.seed, mode: this.mode, phase: this.phase, par: this.hole.par,
       holeLength: this.hole.length, ball: { ...this.ball }, aim: this.aim, power: this.power,
-      club: this.club.short, clubId: this.clubId, lie: this.lie, strokes: this.strokes,
+      club: this.club.short, clubId: this.clubId, curve: this.curve, wind: { ...this.hole.wind }, lie: this.lie, strokes: this.strokes,
       distToHole: this.distToHole(), cup: { ...this.hole.cup }, swing: this.swing ? { ...this.swing } : null,
       lastShot: this.lastShot, card: this.card.slice(),
     };
