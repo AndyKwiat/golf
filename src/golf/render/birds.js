@@ -7,8 +7,10 @@ import { mulberry32 } from '../../sim/rng.js';
 
 const TAU = Math.PI * 2;
 const G = 9.81;
-const MAX_SKY = 6 * 9;
-const MAX_SMALL = 40;
+// Video-game scale: real-size birds are invisible from a golf camera, so they're ~2-2.5x
+// oversized, fly lower, and are spread along the whole hole so some are always near the player.
+const MAX_SKY = 9 * 10;
+const MAX_SMALL = 120;
 
 // Unit bird (wingspan 1, forward +z, up +y, wings along x). aWing = signed span fraction
 // (0 on the body) so the shader knows what to rotate. `body` scales the fuselage (songbirds are
@@ -122,26 +124,30 @@ export class Birds {
     // ---- sky flocks: big lazy loops (ellipse + a harmonic) at 40–150 m over/around the hole
     const groundY = hole.height(center.x, center.z);
     this.flocks = []; this.sky = [];
-    const nF = 4 + Math.floor(rand() * 3);
+    const nF = 7 + Math.floor(rand() * 3);
     for (let f = 0; f < nF; f++) {
-      const R = U(80, 400);
+      const R = U(45, 170);
+      const fz = -30 + (hole.L + 60) * ((f + U(0.2, 0.8)) / nF);       // evenly along the hole
       const fl = {
-        cx: center.x + U(-150, 150), cz: center.z + U(-0.45, 0.45) * Math.max(200, hole.L),
+        cx: hole.cx(Math.min(Math.max(fz, 0), hole.L)) + U(-60, 60), cz: fz,
         rx: R, rz: R * U(0.5, 1.1), rot: U(0, TAU), th0: U(0, TAU),
         dir: rand() < 0.5 ? -1 : 1, w: U(9, 14) / R,          // ~9–14 m/s ground speed
         h2: U(0.05, 0.2), ph2: U(0, TAU),
-        y: groundY + U(40, 150), dy: U(3, 12), phy: U(0, TAU),
+        y: groundY + U(22, 75), dy: U(3, 10), phy: U(0, TAU),
         v: rand() < 0.5,                                      // V formation, else loose cluster
         n: 5 + Math.floor(rand() * 5),
       };
       fl.dark = rand() < 0.5 ? 0x1d1d22 : 0x3b3d44;           // crows vs. darker gulls
+      if (f === 0) {   // one flock loosely shadows the player so birds are always around
+        Object.assign(fl, { follow: true, rx: U(25, 35), rz: U(18, 28), w: U(9, 12) / 30, dyAbove: U(7, 13), n: 7 + Math.floor(rand() * 3) });
+      }
       this.flocks.push(fl);
       for (let i = 0; i < fl.n; i++) {
         let ox, oz, oy = U(-1.5, 1.5);
-        if (fl.v) { const r = Math.ceil(i / 2), s = i % 2 ? 1 : -1; ox = s * r * U(1.8, 2.6); oz = -r * U(1.6, 2.4); }
-        else { ox = U(-9, 9); oz = U(-9, 9); oy = U(-4, 4); }
+        if (fl.v) { const r = Math.ceil(i / 2), s = i % 2 ? 1 : -1; ox = s * r * U(4, 5.5); oz = -r * U(3.5, 5); }
+        else { ox = U(-16, 16); oz = U(-16, 16); oy = U(-6, 6); }
         const b = {
-          fl, ox, oy, oz, span: U(1.0, 1.4),
+          fl, ox, oy, oz, span: U(2.6, 3.4),
           wob: [U(0.2, 0.5), U(0, TAU), U(0.2, 0.5), U(0, TAU), U(0.4, 1.0)],
           rate: TAU * U(2.4, 3.6), phase: U(0, TAU), glide: rand() < 0.3 ? 1 : 0, glideT: U(1, 6), glideTarget: 0,
         };
@@ -154,9 +160,11 @@ export class Birds {
     this.skyMesh.count = this.sky.length;
 
     // ---- songbirds: perch on crowns near the fairway, hop between trees 10–60 m apart
+    // perch on the front rows of trees lining the fairway (that's where the camera looks)
+    const edge = hole.fw.w + hole.roughW + 16;
     const near = trees.filter(t => {
       const zc = Math.min(Math.max(t.z, 0), hole.L);
-      return t.z > -40 && t.z < hole.L + 60 && Math.abs(t.x - hole.cx(zc)) < 80;
+      return t.z > -40 && t.z < hole.L + 60 && Math.abs(hole.lat(t.x, zc)) < edge;
     });
     this.perches = near.length ? near : trees.slice(0, 50);
     const P = this.perches;
@@ -165,17 +173,17 @@ export class Birds {
       for (let j = 0; j < P.length; j++) {
         if (j === i) continue;
         const d = Math.hypot(P[j].x - t.x, P[j].z - t.z);
-        if (d >= 10 && d <= 60) out.push(j);
+        if (d >= 10 && d <= 95) out.push(j);   // long hops cross the fairway
       }
       return out;
     });
-    const tints = [0x7a5532, 0x8b6a45, 0x5f4a35, 0x3f63a8, 0x4f78b8, 0xb53a2a, 0xa8892f];
+    const tints = [0x8a5a2c, 0x3f6fd0, 0x2f8be0, 0xd8402a, 0xe8b22a, 0xf0f0f0, 0x6a3fa8];   // bright, readable against foliage
     this.small = [];
-    const nS = P.length ? 30 + Math.floor(rand() * 11) : 0;
+    const nS = P.length ? Math.min(MAX_SMALL, 90 + Math.floor(rand() * 25)) : 0;
     for (let i = 0; i < nS; i++) {
       const tree = Math.floor(rand() * P.length);
       const b = {
-        span: U(0.3, 0.4), rate: TAU * U(10, 13), phase: U(0, TAU),
+        span: U(0.75, 0.95), rate: TAU * U(8, 11), phase: U(0, TAU),
         state: 'perch', tree, p: this.perchPoint(P[tree]), yaw: U(0, TAU), timer: U(0.2, 6),
         hop: 0, hopT: U(0.5, 2), from: null, to: null, s: 0, dur: 1, arc: 1, und: 0, fold: 1,
         pos: new THREE.Vector3(), vel: new THREE.Vector3(0, 0, 1), acc: new THREE.Vector3(),
@@ -226,6 +234,19 @@ export class Birds {
 
   update(dt, camera) {
     if (!this.hole) return;
+    if (camera) {
+      this.cam = camera.position;
+      { const e0 = camera.matrixWorld.elements, l = Math.hypot(e0[8], e0[10]) || 1; this.camFwd = { x: -e0[8] / l, z: -e0[10] / l }; }
+      // drift the follow flock toward a point ~60 m ahead of the camera
+      const e = camera.matrixWorld.elements, fx = -e[8], fz = -e[10], fl0 = Math.hypot(fx, fz) || 1;
+      const tx = camera.position.x + fx / fl0 * 85, tz = camera.position.z + fz / fl0 * 85;
+      const k = 1 - Math.exp(-dt / 6);
+      for (const fl of this.flocks) if (fl.follow) {
+        if (fl.cx === undefined || Math.hypot(fl.cx - tx, fl.cz - tz) > 400) { fl.cx = tx; fl.cz = tz; }
+        fl.cx += (tx - fl.cx) * k; fl.cz += (tz - fl.cz) * k;
+        fl.y = this.hole.height(fl.cx, fl.cz) + fl.dyAbove + (fl.y0off || 0);
+      }
+    }
     // tree-bird state machine in small substeps (advanceVisuals may pass several seconds)
     let left = dt;
     while (left > 1e-9) { const h = Math.min(left, 1 / 30); this.stepSmall(h); this.stepGlide(h); left -= h; }
@@ -287,10 +308,19 @@ export class Birds {
         if (b.hopT <= 0) { b.hopT = 0.6 + r() * 2.2; if (r() < 0.5) { b.hop = 1e-4; b.yaw += (r() - 0.5) * 2.4; } else b.yaw += (r() - 0.5) * 0.8; }
         if (b.timer <= 0) {
           const nb = this.nbrs[b.tree];
-          const next = nb.length ? nb[Math.floor(r() * nb.length)] : Math.floor(r() * P.length);
+          let next = nb.length ? nb[Math.floor(r() * nb.length)] : Math.floor(r() * P.length);
+          // birds far from the camera fly toward it (so the player always has some around)
+          // and birds behind the camera move to trees in front of it, where they can be seen
+          if (this.cam) {
+            const F = this.camFwd || { x: 0, z: 1 };
+            const ahead = (q, lo, hi) => { const dx = q.x - this.cam.x, dz = q.z - this.cam.z, d = Math.hypot(dx, dz); return d > lo && d < hi && (dx * F.x + dz * F.z) > 0.5 * d; };
+            if (!ahead(b.p, 0, 140) && r() < 0.85) {
+              for (let k = 0; k < 20; k++) { const c = Math.floor(r() * P.length); if (ahead(P[c], 20, 110)) { next = c; break; } }
+            }
+          }
           b.from = b.p.clone(); b.to = this.perchPoint(P[next]); b.tree = next;
           const D = b.from.distanceTo(b.to);
-          b.dur = Math.max(0.8, D / (7 + r() * 4));
+          b.dur = Math.max(0.8, D / (7 + r() * 4 + D * 0.04));
           b.arc = 1 + D * (0.08 + r() * 0.1);
           b.und = 0.25 + r() * 0.35; b.nUnd = Math.max(1, Math.round(D / 7));
           b.s = 0; b.state = 'fly';
@@ -300,7 +330,7 @@ export class Birds {
         b.fold = Math.max(0, b.fold - h * 8);
         b.s += h / b.dur;
         if (b.s >= 1) {
-          b.state = 'perch'; b.p = b.to; b.timer = 2 + r() * 5; b.hopT = 0.4 + r();
+          b.state = 'perch'; b.p = b.to; b.timer = 1.2 + r() * 3; b.hopT = 0.4 + r();
           _v.subVectors(b.to, b.from); b.yaw = Math.atan2(_v.x, _v.z);
           continue;
         }

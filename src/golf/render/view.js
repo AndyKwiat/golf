@@ -10,7 +10,7 @@ import { Sky, LIGHT_DIR as SUN_DIR, HORIZON, radialTexture } from './sky.js';
 import { pineCrown, redwoodCrown, blobCrown, farCrown, barkTrunk, bushGeometry, rockGeometry, reedClump, reedMaterial, waterNormalTexture, leafTexture, needleTexture } from './trees.js';
 
 import { Birds } from './birds.js';
-import { paintPixels, SHADE_MAIN, SHADE_GREEN, hashf, valueNoise, c255, forestFloor } from './paint.js';
+import { paintPixels, SHADE_MAIN, SHADE_GREEN, hashf, valueNoise, c255, forestFloor, bakeTreeShadows, sampleGrid, SHADOW_DARK } from './paint.js';
 
 // Readability exaggeration (deliberately unrealistic so terrain shape is obvious)
 const NORMAL_EXAGGERATION = 1.4;
@@ -34,7 +34,7 @@ export class GolfView {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.05, 9000);
     this.camMode = 'auto';   // 'auto' | 'overhead'
     this.zoom = 1;
-    this.showGrid = true;
+    this.showGrid = false;
     this.camPos = new THREE.Vector3(0, 5, -10);
     this.camLook = new THREE.Vector3(0, 0, 50);
     this.time = 0;
@@ -50,11 +50,14 @@ export class GolfView {
     this.scene.add(fill);
     this.sun = new THREE.DirectionalLight(0xfff5e2, 3.0);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    // Realtime shadows are only for the ball (tree shadows are baked into the ground textures,
+    // so they never pop). Tight frustum around the ball -> crisp ball shadow.
+    this.sun.shadow.mapSize.set(1024, 1024);
     const sc = this.sun.shadow.camera;
-    sc.left = -45; sc.right = 45; sc.top = 45; sc.bottom = -45; sc.near = 1; sc.far = 300;
+    sc.left = -12; sc.right = 12; sc.top = 12; sc.bottom = -12; sc.near = 1; sc.far = 300;
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.intensity = 0.6;   // lighter, friendlier shadows
+    this.lodUniform = { value: new THREE.Vector2(110, 20) };   // tree LOD: cross-fade radius, half band (m)
     this.scene.add(this.sun, this.sun.target);
 
     // Ball + halo
@@ -133,6 +136,7 @@ export class GolfView {
     this.playRect = { xmin, xmax, zmin, zmax };
     this.forest = this.planForest(h);         // trees (sim + decorative), bushes, rocks
     this.forestDensity = this.canopyGrid(this.forest.trees, xmin - 10, zmin - 10, xmax + 10, zmax + 10, 2);
+    this.treeShadow = bakeTreeShadows(this.forest.trees, SUN_DIR, 1);
 
     // Hi-res patches (green + each bunker + each pond), snapped to base grid lines and merged
     // where they overlap. Inside them the base mesh is cut out and replaced by a 0.25 m grid
@@ -203,7 +207,10 @@ export class GolfView {
     const PLACEHOLDER = 0x5aa040;   // flat grass color shown until the worker-painted texture arrives
     const mainMat = new THREE.MeshStandardMaterial({ color: PLACEHOLDER, roughness: 0.95 });
     const mpx = Math.max(0.25, Math.max(pr.xmax - pr.xmin, pr.zmax - pr.zmin) / 4096);
-    this.terrainMesh = new THREE.Mesh(geo, [new THREE.MeshStandardMaterial({ map: outerTex, roughness: 1 }), mainMat]);
+    const vcol = new Float32Array(NV * 3);
+    for (let k = 0; k < NV; k++) { const v = 1 - SHADOW_DARK * sampleGrid(this.treeShadow, pos[k * 3], pos[k * 3 + 2]); vcol[k * 3] = vcol[k * 3 + 1] = v; vcol[k * 3 + 2] = Math.min(1, v * 1.04); }
+    geo.setAttribute('color', new THREE.BufferAttribute(vcol, 3));
+    this.terrainMesh = new THREE.Mesh(geo, [new THREE.MeshStandardMaterial({ map: outerTex, roughness: 1, vertexColors: true }), mainMat]);
     this.terrainMesh.receiveShadow = true;
     this.holeGroup.add(this.terrainMesh);
     this.pickMeshes = [this.terrainMesh];
@@ -325,7 +332,7 @@ export class GolfView {
     }
     const hy = h.height(cup.x, cup.z);
     const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 2.4, 8), new THREE.MeshStandardMaterial({ color: 0xf5f5f5 }));
-    pin.position.set(cup.x, hy + 1.2, cup.z); pin.castShadow = true;
+    pin.position.set(cup.x, hy + 1.2, cup.z);
     const flagGeo = new THREE.PlaneGeometry(0.75, 0.5, 10, 4); flagGeo.translate(0.375, 0, 0);
     this.flag = new THREE.Mesh(flagGeo, new THREE.MeshStandardMaterial({ color: 0xe53935, emissive: 0x7a1010, side: THREE.DoubleSide }));
     this.flag.position.set(cup.x, hy + 2.12, cup.z);
@@ -452,7 +459,7 @@ export class GolfView {
     // trunks, one mesh per tier
     for (let tier = 0; tier < 3; tier++) {
       const list = trees.filter(t => t.tier === tier);
-      const im = mk(geos.trunk[tier], barkMat, list.length, tier < 2);
+      const im = mk(geos.trunk[tier], barkMat, list.length, false);
       list.forEach((t, i) => {
         const top = t.shape === 'cone' ? t.crownBase + 1.3 : t.crownY + 0.3;
         m4.compose(new THREE.Vector3(t.x, t.y0 - 0.3, t.z), one, new THREE.Vector3(t.trunkR, top, t.trunkR)); im.setMatrixAt(i, m4);
@@ -487,7 +494,7 @@ export class GolfView {
         continue;
       }
       const mat = cone ? needleMat : leafMat;
-      const hi = mk(geos[type][0][v], mat, arr.length, true), lo = mk(geos[type][1][v % 2], mat, arr.length, false);
+      const hi = mk(geos[type][0][v], this.lodMaterial(mat, true), arr.length, false), lo = mk(geos[type][1][v % 2], this.lodMaterial(mat, false), arr.length, false);
       this.lodBuckets.push({ hi, lo, items: arr.map(t => ({ x: t.x, z: t.z, m: crownMatrix(t), c: crownColor(t) })) });
     }
     this.lodAt = null;
@@ -496,25 +503,58 @@ export class GolfView {
     const bushGeo = this.bushGeo || (this.bushGeo = bushGeometry(5)), rockGeo = this.rockGeo || (this.rockGeo = rockGeometry(9));
     const bushIm = mk(bushGeo, new THREE.MeshStandardMaterial({ vertexColors: true, map: leafTex, roughness: 0.9 }), bushes.length, false);
     bushes.forEach((b, i) => { q.setFromAxisAngle(up, b.a); m4.compose(new THREE.Vector3(b.x, b.y - 0.1, b.z), q, new THREE.Vector3(b.s * 1.4, b.s, b.s * 1.4)); bushIm.setMatrixAt(i, m4); });
-    const rockIm = mk(rockGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }), rocks.length, true);
+    const rockIm = mk(rockGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }), rocks.length, false);
     rocks.forEach((b, i) => { q.setFromAxisAngle(up, b.a); m4.compose(new THREE.Vector3(b.x, b.y - 0.15 * b.s, b.z), q, new THREE.Vector3(b.s, b.s, b.s)); rockIm.setMatrixAt(i, m4); });
     this.treeCount = trees.length;
   }
 
-  /** Re-bucket near trees into high/medium detail meshes by horizontal distance to `p`. */
-  refreshTreeLOD(p, R = 110) {
+  /**
+   * Dithered LOD cross-fade material. Both detail levels hold the instances inside the fade band
+   * (R +- band); the shader computes each instance's camera distance and discards complementary
+   * dither patterns, so a tree fades smoothly from detailed to simple with no pop or gap.
+   */
+  lodMaterial(base, hi) {
+    const m = base.clone();
+    m.onBeforeCompile = sh => {
+      sh.uniforms.uLod = this.lodUniform;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform vec2 uLod;\nvarying float vLodFade;')
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          { vec4 io = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+            vLodFade = clamp((distance(io.xz, cameraPosition.xz) - (uLod.x - uLod.y)) / (2.0 * uLod.y), 0.0, 1.0); }`);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vLodFade;')
+        .replace('void main() {', `void main() {
+          float lodN = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+          ${hi ? 'if (lodN < vLodFade) discard;' : 'if (lodN >= vLodFade) discard;'}`);
+    };
+    m.customProgramCacheKey = () => (hi ? 'lod-hi' : 'lod-lo');
+    return m;
+  }
+
+  /**
+   * Re-bucket near trees into the high/medium detail meshes around `p`. Buckets overlap by the
+   * fade band plus a margin larger than the 8 m refresh step, so no tree is ever missing between
+   * refreshes. Bounding spheres are recomputed: InstancedMesh caches them, and stale bounds
+   * made whole meshes get frustum-culled (trees blinking in and out).
+   */
+  refreshTreeLOD(p) {
     if (this.lodAt && Math.hypot(p.x - this.lodAt.x, p.z - this.lodAt.z) < 8) return;
     this.lodAt = { x: p.x, z: p.z };
-    const R2 = R * R;
+    const [R, B] = [this.lodUniform.value.x, this.lodUniform.value.y], M = 12;
+    const hiR2 = (R + B + M) ** 2, loR2 = Math.max(0, R - B - M) ** 2;
     for (const b of this.lodBuckets) {
       let nh = 0, nl = 0;
       for (const it of b.items) {
-        const dx = it.x - p.x, dz = it.z - p.z;
-        if (dx * dx + dz * dz < R2) { b.hi.setMatrixAt(nh, it.m); b.hi.setColorAt(nh++, it.c); }
-        else { b.lo.setMatrixAt(nl, it.m); b.lo.setColorAt(nl++, it.c); }
+        const dx = it.x - p.x, dz = it.z - p.z, d2 = dx * dx + dz * dz;
+        if (d2 < hiR2) { b.hi.setMatrixAt(nh, it.m); b.hi.setColorAt(nh++, it.c); }
+        if (d2 > loR2) { b.lo.setMatrixAt(nl, it.m); b.lo.setColorAt(nl++, it.c); }
       }
       b.hi.count = nh; b.lo.count = nl;
-      for (const im of [b.hi, b.lo]) { im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true; }
+      for (const im of [b.hi, b.lo]) {
+        im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
+        im.computeBoundingSphere();
+      }
     }
   }
 
@@ -603,7 +643,7 @@ export class GolfView {
   /** Queue a texture paint; when done, assign to mat (and optional grid variant). */
   paintInto(mat, r, px, shadeAmt, withGrid, hstep, onDone) {
     const h = this.game.hole, gen = this.buildGen;
-    const job = { r: { xmin: r.xmin, xmax: r.xmax, zmin: r.zmin, zmax: r.zmax }, px, shadeAmt, withGrid, hstep, light: { x: SUN_DIR.x, y: SUN_DIR.y, z: SUN_DIR.z }, canopy: this.forestDensity };
+    const job = { r: { xmin: r.xmin, xmax: r.xmax, zmin: r.zmin, zmax: r.zmax }, px, shadeAmt, withGrid, hstep, light: { x: SUN_DIR.x, y: SUN_DIR.y, z: SUN_DIR.z }, canopy: this.forestDensity, shadow: this.treeShadow };
     return this.pool.run(this.paramsKey, this.paramsClean, job, h).then(o => {
       if (gen !== this.buildGen) return;   // a newer hole replaced this one
       const plain = this.pixelsToTex(o.W, o.H, o.a), grid = o.b ? this.pixelsToTex(o.W, o.H, o.b) : null;
@@ -671,6 +711,8 @@ export class GolfView {
     if (!cb.air || by < gy) by = Math.max(by, gy);
     if (game.phase === 'holed') { this.sinkT = Math.min(1, this.sinkT + dtReal * 3); by = gy - this.sinkT * 0.08; } else this.sinkT = 0;
     this.ball.position.set(bx, by + BALL_R, bz);
+    // ball in a baked tree shadow: darken it to match (only the ball has a realtime shadow)
+    { const sh = this.treeShadow && !cb.air ? sampleGrid(this.treeShadow, bx, bz) : 0; this.ball.material.color.setScalar(1 - 0.5 * sh); }
     const camDist = this.camera.position.distanceTo(this.ball.position);
     const bs = cb.air ? Math.max(2.5, camDist / 10) : Math.max(1, camDist / 35);  // exaggerated in flight so it's trackable
     this.ball.scale.setScalar(bs);
@@ -812,7 +854,7 @@ class PaintPool {
     this.workers = this.idle.length;
   }
   run(key, params, job, hole) {
-    if (!this.workers) { const o = paintPixels(hole, job.r, job.px, job.shadeAmt, job.withGrid, job.hstep, job.light, job.canopy); return Promise.resolve(o); }
+    if (!this.workers) { const o = paintPixels(hole, job.r, job.px, job.shadeAmt, job.withGrid, job.hstep, job.light, job.canopy, job.shadow); return Promise.resolve(o); }
     return new Promise(resolve => { const id = this.next++; this.jobs.set(id, { resolve }); this.queue.push({ id, key, params, job }); this.pump(); });
   }
   pump() { while (this.idle.length && this.queue.length) this.idle.pop().postMessage(this.queue.shift()); }

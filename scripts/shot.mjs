@@ -39,7 +39,7 @@ export async function launchBrowser() {
 /** Wait for async hole building (worker-painted textures) if the page supports it. */
 export async function waitReady(page) { await page.evaluate(() => window.__golf.whenReady ? window.__golf.whenReady() : true); }
 
-export async function openGame(browser, port, { seed = 1, mode = '', cam = 'auto', grid = '1', hud = '1', width = 1280, height = 800, page: page_ = '', lite = '' } = {}) {
+export async function openGame(browser, port, { seed = 1, mode = '', cam = 'auto', grid = '0', hud = '1', width = 1280, height = 800, page: page_ = '', lite = '' } = {}) {
   const page = await browser.newPage({ viewport: { width: Number(width), height: Number(height) } });
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));

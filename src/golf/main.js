@@ -11,7 +11,7 @@ const seed = params.has('seed') ? Number(params.get('seed')) : randomSeed();
 const game = new GolfGame({ seed, mode: params.get('mode') === 'normal' ? 'normal' : 'cheat' });
 const view = new GolfView(document.getElementById('c'), game, { lite: params.get('lite') === '1' });
 if (params.get('cam') === 'overhead') view.camMode = 'overhead';
-if (params.get('grid') === '0') view.setGrid(false);
+if (params.get('grid') === '1') view.setGrid(true);   // grid is off by default
 let paused = params.get('paused') === '1';
 const $ = id => document.getElementById(id);
 if (params.get('hud') === '0') $('hud').classList.add('hidden');

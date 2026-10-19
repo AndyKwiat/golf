@@ -195,9 +195,20 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
   hemisphere — the user asked for a cheerful look; keep it bright.
 - Forest (`planForest` → `buildTrees`): tier 0 = the sim's `hole.trees` (~550, collide), tier 1 =
   decorative trees within 45 m outside the corridor, tier 2 = deep forest out to ~280 m beyond
-  the play rect (~17k, ultra-cheap 14-20 tri crowns, no shadows). Tiers 0/1 use **dynamic LOD**:
-  `refreshTreeLOD(cameraPos)` moves instances between a high-detail (shadow-casting) and a medium
-  mesh per (species, variant) bucket by distance (110 m), only when the camera moved > 8 m.
+  the play rect (~17k, ultra-cheap 14-20 tri crowns). Tiers 0/1 use **dynamic LOD with a dithered
+  cross-fade**: `refreshTreeLOD(cameraPos)` (when the camera moved > 8 m) fills a high- and a
+  medium-detail mesh per (species, variant) bucket; both hold the instances inside the fade band
+  (`lodUniform` = radius 110 m ± 20 m, plus a 12 m margin > the refresh step) and `lodMaterial`
+  discards complementary screen-space dither patterns by per-instance camera distance, so there
+  is no pop and never a gap. **Always `computeBoundingSphere()` after changing an InstancedMesh's
+  instances** — three caches it, and stale bounds culled whole tree meshes (trees blinking in/out
+  far from the tee).
+- **Shadows**: trees cast no realtime shadows. Sun and trees are static, so `bakeTreeShadows`
+  (paint.js) rasterizes every tree's ground shadow (ellipsoid/cone/trunk projections along
+  `LIGHT_DIR`) into a 1 m grid that the paint workers multiply into the ground textures and the
+  outer terrain gets as vertex colors — shadows everywhere, zero pop-in. The realtime shadow map
+  only covers ±12 m around the ball (the ball is its only caster); the ball is darkened when it
+  rests in a baked shadow (`sampleGrid`).
   Understory bushes/rocks behind the first tree rows. A canopy coverage grid (`canopyGrid`) is
   sent to the paint workers to darken the forest floor under trees; `forestFloor()` in paint.js
   paints moss / needles / leaf litter / dirt / grass patches beyond the rough and out of bounds.
@@ -208,8 +219,11 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
   procedural ripple normal map whose offset scrolls (`this.flowing`, rivers flow ~0.3 m/s).
   Reeds/cattails (`reedClump`, `reedMaterial` with a wind-sway vertex shader) line shores where
   the surface is rough/oob/water.
-- Birds (`birds.js`, render-only, seeded): sky flocks looping 40-150 m up and songbirds hopping
-  between tier 0/1 tree tops; wing flapping is done in the vertex shader.
+- Birds (`birds.js`, render-only, seeded): ~2.5x oversized on purpose (real-size birds were
+  invisible). 7-9 flocks spread along the hole 22-75 m up, plus one "follow" flock that drifts
+  ~85 m ahead of the camera; ~100 songbirds on the fairway-edge trees that, when behind/far from
+  the camera, hop to trees in front of it. Wing flapping is done in the vertex shader.
+- Putting grid is **off by default** (G toggles; `?grid=1`).
 - Trees (trees.js): unit-space geometry scaled per instance to the exact collision volumes.
   Pines = 7 whorls × 2 offset star-shaped drooping cones + needle texture; deciduous = cluster of
   noise-displaced spheres with vertex AO + leaf-speckle texture. 3 variants each, picked by hash.
