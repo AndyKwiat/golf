@@ -326,7 +326,7 @@ window.__golf = {
   /** Place the ball `dist` m short of bunker i (or pond i with kind='pond'), looking at it. */
   lookAtHazard(i = 0, kind = 'bunker', dist = 9) {
     const hz = (kind === 'pond' ? game.hole.ponds : game.hole.bunkers)[i];
-    const dx = hz.x - game.ball.x, dz = hz.z - game.ball.z, L = Math.hypot(dx, dz) || 1, r = hz.R0 + dist;
+    const dx = hz.x - game.ball.x, dz = hz.z - game.ball.z, L = Math.hypot(dx, dz) || 1, r = (hz._bound || hz.R0) + dist;
     return this.placeBall(hz.x - dx / L * r, hz.z - dz / L * r, hz.x, hz.z);
   },
   setCamera(mode, zoom = 1) { view.camMode = mode; view.zoom = zoom; draw(1, 0, true); },

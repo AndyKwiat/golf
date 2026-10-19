@@ -273,9 +273,25 @@ export class GolfView {
         const r = p.R0 * f + 0.4, lx = Math.cos(th) * r * p.sx, lz = Math.sin(th) * r;
         pts.push(new THREE.Vector2(p.x + lx * c - lz * s, p.z + lx * s + lz * c));
       }
-      const shape = new THREE.Shape(pts);
-      const wg = new THREE.ShapeGeometry(shape, 1).rotateX(Math.PI / 2);
-      const water = new THREE.Mesh(wg, new THREE.MeshStandardMaterial({ color: 0x2f7fc4, emissive: 0x0b2f55, roughness: 0.15, metalness: 0, envMap: this.sky.envMap(this.renderer), envMapIntensity: 1.2, transparent: true, opacity: 0.93, side: THREE.DoubleSide }));
+      // polar mesh (the pond outline is star-shaped around its center) so depth can vary:
+      // clear shallow edges show the muddy bed, the middle is deep dark teal
+      const RINGS = [0, 0.35, 0.6, 0.8, 0.92, 1], wpos = [], wcol = [], widx = [];
+      wpos.push(p.x, 0, p.z); wcol.push(...waterTint(1));
+      for (let r = 1; r < RINGS.length; r++) for (let i = 0; i < N; i++) {
+        const v = pts[i], t = RINGS[r];
+        wpos.push(p.x + (v.x - p.x) * t, 0, p.z + (v.y - p.z) * t); wcol.push(...waterTint(1 - t));
+      }
+      for (let i = 0; i < N; i++) widx.push(0, 1 + (i + 1) % N, 1 + i);
+      for (let r = 1; r < RINGS.length - 1; r++) for (let i = 0; i < N; i++) {
+        const a = 1 + (r - 1) * N + i, b = 1 + (r - 1) * N + (i + 1) % N, c2 = a + N, d = b + N;
+        widx.push(a, b, c2, b, d, c2);
+      }
+      const wg = new THREE.BufferGeometry();
+      wg.setAttribute('position', new THREE.Float32BufferAttribute(wpos, 3));
+      wg.setAttribute('color', new THREE.Float32BufferAttribute(wcol, 4));
+      wg.setAttribute('uv', new THREE.Float32BufferAttribute(wpos.filter((_, k) => k % 3 !== 1).map(v => v / 7), 2));
+      wg.setIndex(widx); wg.computeVertexNormals();
+      const water = new THREE.Mesh(wg, waterMaterial(this.sky.envMap(this.renderer)));
       water.position.y = p.level;
       water.receiveShadow = true;
       water.userData.pond = true;
@@ -298,28 +314,35 @@ export class GolfView {
     for (const rv of h.rivers) {
       const curve = new THREE.CatmullRomCurve3(rv.pts.map(([x, z], i) => new THREE.Vector3(x, rv.levels[i], z)));
       const N = rv.pts.length * 6, pts = curve.getPoints(N), half = rv.w / 2 + 0.6;
-      const pos = [], uvs = [], idx = [];
+      const pos = [], uvs = [], cols = [], idx = [];
+      const COLS = [-1, -0.75, -0.4, 0, 0.4, 0.75, 1], NC = COLS.length;
       let along = 0;
       for (let i = 0; i <= N; i++) {
         const p = pts[i], q = pts[Math.min(N, i + 1)], o = pts[Math.max(0, i - 1)];
         let tx = q.x - o.x, tz = q.z - o.z; const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
         if (i) along += p.distanceTo(pts[i - 1]);
-        pos.push(p.x - tz * half, p.y, p.z + tx * half, p.x + tz * half, p.y, p.z - tx * half);
-        uvs.push(0, along / 7, rv.w / 7, along / 7);
-        if (i < N) { const k = i * 2; idx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3); }
+        for (const u of COLS) {
+          pos.push(p.x - tz * half * u, p.y, p.z + tx * half * u);
+          uvs.push((u + 1) * half / 7, along / 7);
+          cols.push(...waterTint(1 - Math.abs(u)));
+        }
+        if (i < N) for (let c2 = 0; c2 < NC - 1; c2++) { const k = i * NC + c2; idx.push(k, k + NC, k + 1, k + 1, k + NC, k + NC + 1); }
       }
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 4));
       g.setIndex(idx); g.computeVertexNormals();
       const t = wn.clone(); t.needsUpdate = true;
-      const mat = new THREE.MeshStandardMaterial({ color: 0x3584c4, emissive: 0x0b2f55, roughness: 0.18, metalness: 0, envMap: this.sky.envMap(this.renderer), envMapIntensity: 1.2, normalMap: t, normalScale: new THREE.Vector2(0.35, 0.35), transparent: true, opacity: 0.93, side: THREE.DoubleSide });
+      const mat = waterMaterial(this.sky.envMap(this.renderer));
+      mat.normalMap = t; mat.normalScale = new THREE.Vector2(0.35, 0.35);
       const m = new THREE.Mesh(g, mat); m.receiveShadow = true;
       this.holeGroup.add(m);
       const down = rv.levels[0] >= rv.levels[rv.levels.length - 1] ? 1 : -1;   // flow downhill
       this.flowing.push({ tex: t, vx: 0, vy: -0.32 * down });
     }
     this.buildReeds(h);
+    this.buildShoreRocks(h);
 
     // Cup, pin, flag
     const cup = h.cup;
@@ -556,6 +579,67 @@ export class GolfView {
         im.computeBoundingSphere();
       }
     }
+  }
+
+  /** Rocks of mixed sizes clustered along pond shores and river banks (some half-submerged). */
+  buildShoreRocks(h) {
+    const rand = mulberry32((h.seed ^ 0x50c4) >>> 0), rocks = [];
+    const ok = (x, z) => { const s = h.surface(x, z); return s === 'rough' || s === 'oob' || s === 'water'; };
+    const place = (x, z, level, out) => {
+      if (!ok(x, z)) return;
+      const big = rand() < 0.2, s = big ? 0.8 + rand() * 1.5 : 0.15 + Math.pow(rand(), 2) * 0.75;
+      const y = Math.max(h.height(x, z), level - 0.5 * s);
+      rocks.push({ x, z, y: y - 0.12 * s, s, a: rand() * 6.28, sx: 0.8 + rand() * 0.6, sy: 0.5 + rand() * 0.5, sz: 0.8 + rand() * 0.6, wet: out < 0.8, v: Math.floor(rand() * 4) });
+    };
+    const cluster = (x, z, nx, nz, level) => {   // nx,nz: outward normal
+      const n = 2 + Math.floor(rand() * 6);
+      for (let k = 0; k < n; k++) {
+        const out = (rand() - 0.3) * 2.6, side = (rand() - 0.5) * 3;
+        place(x + nx * out - nz * side, z + nz * out + nx * side, level, out);
+      }
+    };
+    for (const p of h.ponds) {
+      const c = Math.cos(p.rot), s = Math.sin(p.rot), per = 2 * Math.PI * p.R0 * p.sx;
+      for (let k = 0; k < per; k += 1.4) {
+        if (rand() > 0.62) continue;
+        const th = (k / per) * Math.PI * 2;
+        let f = 1; for (const hm of p.harm) f += hm.a * Math.cos(hm.k * th + hm.p);
+        const lx = Math.cos(th) * p.R0 * f * p.sx, lz = Math.sin(th) * p.R0 * f;
+        const x = p.x + lx * c - lz * s, z = p.z + lx * s + lz * c, L = Math.hypot(x - p.x, z - p.z) || 1;
+        cluster(x, z, (x - p.x) / L, (z - p.z) / L, p.level);
+      }
+    }
+    for (const rv of h.rivers) {
+      const P = rv.pts;
+      for (let i = 0; i < P.length - 1; i++) {
+        const [ax, az] = P[i], [bx, bz] = P[i + 1], L = Math.hypot(bx - ax, bz - az), tx = (bx - ax) / L, tz = (bz - az) / L;
+        for (let d = 0; d < L; d += 1.6) for (const side of [-1, 1]) {
+          if (rand() > 0.6) continue;
+          const nx = -side * tz, nz = side * tx, off = rv.w / 2;
+          cluster(ax + tx * d + nx * off, az + tz * d + nz * off, nx, nz, rv.levels[i] + (rv.levels[i + 1] - rv.levels[i]) * (d / L));
+        }
+        // the odd boulder in the stream
+        if (rand() < 0.6) { const t = rand(), off = (rand() - 0.5) * rv.w * 0.6; place(ax + (bx - ax) * t - tz * off, az + (bz - az) * t + tx * off, rv.levels[i], -1); }
+      }
+    }
+    const geos = this.shoreRockGeos || (this.shoreRockGeos = [21, 22, 23, 24].map(sd => rockGeometry(sd)));
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
+    for (let v = 0; v < 4; v++) {
+      const list = rocks.filter(r => r.v === v);
+      const im = new THREE.InstancedMesh(geos[v], mat, Math.max(1, list.length)); im.count = list.length;
+      list.forEach((r, i) => {
+        q.setFromAxisAngle(up, r.a);
+        m4.compose(new THREE.Vector3(r.x, r.y, r.z), q, new THREE.Vector3(r.s * r.sx, r.s * r.sy, r.s * r.sz)); im.setMatrixAt(i, m4);
+        // weathered grey-brown, some mossy; wet rocks near the waterline are darker
+        const g = 0.48 + hashf(r.x, r.z) * 0.3, warm = hashf(r.z, r.x) * 0.16, moss = hashf(r.x + 3, r.z) < 0.3 ? 0.18 : 0;
+        col.setRGB(g * (1 + warm) * (1 - moss), g * (1 + moss * 0.3), g * (1 - warm) * (1 - moss * 1.4)).multiplyScalar(r.wet ? 0.6 : 1); im.setColorAt(i, col);
+      });
+      if (im.instanceColor) im.instanceColor.needsUpdate = true;
+      im.computeBoundingSphere();
+      this.holeGroup.add(im);
+    }
+    this.shoreRockCount = rocks.length;
   }
 
   /** Reeds and cattails along pond shores and river banks. */
@@ -887,6 +971,15 @@ function gridNormals(H, NX, NZ, X, Z) {
     }
   }
   return nrm;
+}
+
+/** Water color + alpha by depth fraction (0 = edge, 1 = deepest): clear tan-green shallows -> deep teal. */
+function waterTint(depth) {
+  const d = Math.min(1, Math.max(0, depth)), e = Math.sqrt(d);
+  return [0.55 + (0.1 - 0.55) * e, 0.62 + (0.33 - 0.62) * e, 0.52 + (0.4 - 0.52) * e, 0.22 + 0.74 * e];
+}
+function waterMaterial(env) {
+  return new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.12, metalness: 0, envMap: env, envMapIntensity: 0.9, transparent: true, depthWrite: false, side: THREE.DoubleSide });
 }
 
 /** Tileable top-down canopy texture (dark/light green tree blobs) for the far horizon ground. */

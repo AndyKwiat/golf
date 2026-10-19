@@ -45,6 +45,13 @@ export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light, canopy =
         if (Math.abs(x - bk.x) > bk._bound + 1 || Math.abs(z - bk.z) > bk._bound + 1) continue;
         bd = Math.min(bd, blobDist(bk, x, z));
       }
+      // signed distance to the nearest water edge (ponds + rivers; < 0 = under water)
+      let sd = Infinity;
+      for (const p of h.ponds) {
+        if (Math.abs(x - p.x) > p._bound + 6 || Math.abs(z - p.z) > p._bound + 6) continue;
+        sd = Math.min(sd, blobDist(p, x, z));
+      }
+      if (h.rivers.length && sd > -1) { const rv = h.riverAt(x, z); if (rv) sd = Math.min(sd, rv.d - rv.half); }
       const mott = valueNoise(x * 0.9, z * 0.9) * 0.08 + valueNoise(x * 4, z * 4) * 0.04 - 0.06;
       let cr, cg, cb, amt = shadeAmt;
       switch (surf) {
@@ -93,6 +100,33 @@ export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light, canopy =
       }
       // baked tree shadows (sun and trees are static, so these never pop)
       if (shadow) { const sh = sampleGrid(shadow, x, z); if (sh > 0) { const k = 1 - SHADOW_DARK * sh; cr *= k; cg *= k; cb *= k * 1.04; } }
+      // shorelines: ragged band of earth / wet mud / gravel, and a muddy stony bed under the water
+      if (sd < 5 && surf !== 'green' && surf !== 'fringe' && surf !== 'sand') {
+        const pb = hashf(Math.floor(x * 5), Math.floor(z * 5)), pb2 = hashf(Math.floor(x * 2.2) + 7, Math.floor(z * 2.2));
+        const grit = (pb > 0.82 ? 0.16 : pb < 0.12 ? -0.12 : 0) + (pb2 > 0.9 ? 0.12 : 0);
+        if (sd < 0) {
+          const deep = smoothstep(0, -3, sd), mn = valueNoise(x * 0.6, z * 0.6);
+          const k = 1 + grit * 0.8 + (mn - 0.5) * 0.25;
+          cr = (0.38 - 0.16 * deep) * k; cg = (0.33 - 0.12 * deep) * k; cb = (0.24 - 0.06 * deep) * k;
+        } else {
+          const w = 2.2 + 4.2 * valueNoise(x * 0.25 + 11, z * 0.25);               // band width varies along the shore
+          const rag = valueNoise(x * 1.4, z * 1.4) * 0.5 + valueNoise(x * 4.5, z * 4.5) * 0.25;
+          const t = smoothstep(0.15, 0.55, (1 - sd / w) + rag - 0.35);             // ragged grass/earth boundary
+          const wet = smoothstep(1.1, 0, sd);
+          let er = 0.45 + (0.24 - 0.45) * wet, eg = 0.36 + (0.18 - 0.36) * wet, eb = 0.25 + (0.12 - 0.25) * wet;
+          // gravel / pebble beds in patches
+          const gv = smoothstep(0.55, 0.7, valueNoise(x * 0.45 + 3, z * 0.45 - 7));
+          er += (0.5 - er) * gv; eg += (0.48 - eg) * gv; eb += (0.43 - eb) * gv;
+          const k = 1 + grit * (1 + gv * 1.5) + (valueNoise(x * 0.8, z * 0.8) - 0.5) * 0.22;
+          // grass tufts poking through the dry part of the band
+          const tuft = smoothstep(0.62, 0.75, valueNoise(x * 2.3, z * 2.3)) * smoothstep(0.6, 1.6, sd);
+          const te = t * (1 - tuft * 0.85);
+          cr += (er * k - cr) * te; cg += (eg * k - cg) * te; cb += (eb * k - cb) * te;
+          // lusher, darker grass just beyond the earth band
+          const lush = smoothstep(w + 2, w, sd) * (1 - t) * 0.25;
+          cr *= 1 - lush; cg *= 1 - lush * 0.4; cb *= 1 - lush;
+        }
+      }
       // grass lip around bunkers: a thin darker, lusher band
       if (surf !== 'sand' && bd < 0.35) { const t = 1 - Math.max(0, bd) / 0.35; cr *= 1 - 0.25 * t; cg *= 1 - 0.12 * t; cb *= 1 - 0.25 * t; }
       const ex = -gx * SHADE_MAIN, ez = -gz * SHADE_MAIN, el = Math.sqrt(ex * ex + 1 + ez * ez);

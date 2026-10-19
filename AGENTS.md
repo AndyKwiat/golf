@@ -215,6 +215,12 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
   Beyond the planted forest the horizon ground uses a tiling canopy texture + tree-line rings.
   Budget: ~3-4M tris/frame incl. shadows; headless SwiftShader takes seconds per first frame
   (real GPUs are fine) — measure with `renderer.info` before adding more.
+- Shorelines: paint.js computes a signed distance to the nearest water edge (`sd`, ponds via
+  blobDist + rivers via riverAt) and paints a ragged 2-6 m band of earth → wet mud with gravel
+  patches and grass tufts, plus a muddy stony bed under the water. `buildShoreRocks` scatters
+  clustered rocks (pebbles to ~2 m boulders, some mossy, darker when wet, a few mid-stream).
+  Water meshes carry per-vertex RGBA depth tint (`waterTint`): clear shallows at the edge so the
+  bed shows, deep teal in the middle (ponds are polar ring meshes, rivers 7 columns across).
 - Water: rivers are Catmull-Rom ribbons at the river's levels; rivers and ponds share a
   procedural ripple normal map whose offset scrolls (`this.flowing`, rivers flow ~0.3 m/s).
   Reeds/cattails (`reedClump`, `reedMaterial` with a wind-sway vertex shader) line shores where
