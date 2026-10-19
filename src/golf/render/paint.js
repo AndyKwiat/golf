@@ -18,7 +18,7 @@ function heightGrid(h, x0, z0, x1, z1, step) {
  * Returns { W, H, a, b }: RGBA pixel arrays (b = same plus the 1 m putting grid, if withGrid).
  * light = {x,y,z} unit light direction for the baked hillshade.
  */
-export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light) {
+export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light, canopy = null) {
   const W = Math.round((r.xmax - r.xmin) / px), Ht = Math.round((r.zmax - r.zmin) / px);
   const hg = heightGrid(h, r.xmin - 1, r.zmin - 1, r.xmax + 1, r.zmax + 1, Math.max(px, hstep));
   const { H, nx, step } = hg;
@@ -72,7 +72,24 @@ export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light) {
           break;
         }
         case 'water': cr = 0.18; cg = 0.3; cb = 0.22; break;
-        default: { const k = 1 + n * 2.2 + mott * 1.6; cr = 0.25 * k; cg = 0.55 * k; cb = 0.17 * k; if (surf === 'oob') { cr *= 0.94; cg *= 0.94; cb *= 0.94; } }
+        default: {
+          const k = 1 + n * 2.2 + mott * 1.6; cr = 0.25 * k; cg = 0.55 * k; cb = 0.17 * k;
+          // forest floor: fades in beyond the playable rough, everywhere out of bounds
+          const zc = z < 0 ? 0 : z > h.L ? h.L : z, la = Math.abs(h.lat(x, zc));
+          const ff = surf === 'oob' ? 1 : smoothstep(h.fw.w + h.roughW - 4, h.fw.w + h.roughW + 10, la);
+          if (ff > 0) {
+            const [fr, fg, fb] = forestFloor(x, z, n);
+            cr += (fr - cr) * ff; cg += (fg - cg) * ff; cb += (fb - cb) * ff;
+          }
+        }
+      }
+      // shade under tree canopies (soft, from the canopy coverage grid)
+      if (canopy) {
+        const ci = Math.round((x - canopy.x0) / canopy.cell), cj = Math.round((z - canopy.z0) / canopy.cell);
+        if (ci >= 0 && cj >= 0 && ci < canopy.nx && cj < canopy.nz) {
+          const c = canopy.data[cj * canopy.nx + ci];
+          if (c > 0) { const k = 1 - 0.36 * Math.min(1, c * 0.8); cr *= k; cg *= k; cb *= k * 0.97; }
+        }
       }
       // grass lip around bunkers: a thin darker, lusher band
       if (surf !== 'sand' && bd < 0.35) { const t = 1 - Math.max(0, bd) / 0.35; cr *= 1 - 0.25 * t; cg *= 1 - 0.12 * t; cb *= 1 - 0.25 * t; }
@@ -110,4 +127,21 @@ export function valueNoise(x, z) {
   const sx = fx * fx * (3 - 2 * fx), sz = fz * fz * (3 - 2 * fz);
   const a = hashf(i, j), b = hashf(i + 1, j), c = hashf(i, j + 1), d = hashf(i + 1, j + 1);
   return a + (b - a) * sx + (c - a) * sz + (a - b - c + d) * sx * sz;
+}
+
+function smoothstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+
+/** Forest floor color: patches of moss, pine needles, leaf litter, bare dirt and grass tufts. */
+export function forestFloor(x, z, n) {
+  const n1 = valueNoise(x * 0.11, z * 0.11), n2 = valueNoise(x * 0.42 + 5, z * 0.42), n3 = valueNoise(x * 1.6, z * 1.6 + 3);
+  const t1 = smoothstep(0.35, 0.65, n1);                          // moss <-> needles
+  let r = 0.21 + (0.40 - 0.21) * t1, g = 0.37 + (0.30 - 0.37) * t1, b = 0.14 + (0.17 - 0.14) * t1;
+  const t2 = smoothstep(0.58, 0.82, n2);                          // leaf litter
+  r += (0.47 - r) * t2; g += (0.37 - g) * t2; b += (0.19 - b) * t2;
+  const t3 = smoothstep(0.7, 0.85, n3) * (1 - t2);                // bare dirt
+  r += (0.35 - r) * t3; g += (0.27 - g) * t3; b += (0.19 - b) * t3;
+  const t4 = smoothstep(0.32, 0.18, n2);                          // grass tufts
+  r += (0.26 - r) * t4; g += (0.5 - g) * t4; b += (0.17 - b) * t4;
+  const k = 0.92 + n * 3 + (n3 - 0.5) * 0.12;
+  return [r * k, g * k, b * k];
 }

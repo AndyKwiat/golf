@@ -86,6 +86,7 @@ export class Sky {
     this.horizon.add(ring(center, 2900, 256, rand, 220, 650, 0x93a9cf, 0xd2def0, true));
     this.horizon.add(ring(center, 1900, 192, rand, 70, 230, 0x7fb08f, 0xc0d8cc, false));
     this.horizon.add(ring(center, 900, 256, rand, 18, 38, 0x3f7a45, 0x7aa585, false, true));
+    this.horizon.add(ring(center, 620, 320, rand, 22, 48, 0x356b3a, 0x5f8f66, false, true));
   }
 
   /** Prefiltered sky environment map (for water reflections). */

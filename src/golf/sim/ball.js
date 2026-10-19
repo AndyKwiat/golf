@@ -64,7 +64,7 @@ function treeCollide(b, hole, ctx, h) {
     if (!b.air) continue;
     // crown
     let inside = false, nx = 0, ny = 0, nz = 0;
-    if (t.type === 'pine') {
+    if (t.shape ? t.shape === 'cone' : t.type === 'pine') {
       const H = t.crownTop - t.crownBase, yr = b.y - (t.y0 + t.crownBase);
       if (yr > 0 && yr < H && hd < t.crownR * (1 - yr / H)) {
         inside = true;

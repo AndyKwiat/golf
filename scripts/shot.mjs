@@ -11,7 +11,7 @@
 //        --do EXPR (repeatable; evaluated as `__golf.EXPR` in order)
 //        --eval CODE (repeatable, interleaved with --do; arbitrary JS with `g` = window.__golf,
 //               e.g. --eval "g.view.dotMesh.visible = false; g.render()")  --out FILE
-//        --width W --height H  --frames DIR (with --putt-frames K: saves a frame every K ticks while rolling)
+//        --lite 1 (no deep forest/shadows: fast, for gameplay-only shots)  --width W --height H  --frames DIR (with --putt-frames K: saves a frame every K ticks while rolling)
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -39,12 +39,12 @@ export async function launchBrowser() {
 /** Wait for async hole building (worker-painted textures) if the page supports it. */
 export async function waitReady(page) { await page.evaluate(() => window.__golf.whenReady ? window.__golf.whenReady() : true); }
 
-export async function openGame(browser, port, { seed = 1, mode = '', cam = 'auto', grid = '1', hud = '1', width = 1280, height = 800, page: page_ = '' } = {}) {
+export async function openGame(browser, port, { seed = 1, mode = '', cam = 'auto', grid = '1', hud = '1', width = 1280, height = 800, page: page_ = '', lite = '' } = {}) {
   const page = await browser.newPage({ viewport: { width: Number(width), height: Number(height) } });
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto(`http://127.0.0.1:${port}/${page_ || ""}?seed=${seed}${mode ? `&mode=${mode}` : ''}&cam=${cam}&grid=${grid}&hud=${hud}&paused=1`);
+  await page.goto(`http://127.0.0.1:${port}/${page_ || ""}?seed=${seed}${mode ? `&mode=${mode}` : ''}&cam=${cam}&grid=${grid}&hud=${hud}${lite ? '&lite=1' : ''}&paused=1`);
   await page.waitForFunction(() => window.__golfReady === true, null, { timeout: 30000 });
   await waitReady(page);
   await page.evaluate(() => window.__golf.render());

@@ -35,6 +35,40 @@ function makeHarm(rand, n, amp) {
   return out;
 }
 
+/** Cache a river's bounding box (with bank margin). River: { pts: [[x,z]...], w, levels: [] } */
+function prepRiver(r) {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const [x, z] of r.pts) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+  const m = r.w / 2 + 7;
+  r._bb = [x0 - m, x1 + m, z0 - m, z1 + m];
+  // per-segment bounding squares for quick rejection. Margin (w/2 + 25 m) exceeds every distance
+  // threshold callers use, so culling never changes a result that matters.
+  r._segs = [];
+  for (let i = 0; i < r.pts.length - 1; i++) {
+    const [ax, az] = r.pts[i], [bx, bz] = r.pts[i + 1];
+    r._segs.push({ cx: (ax + bx) / 2, cz: (az + bz) / 2, rad: len2(bx - ax, bz - az) / 2 + r.w / 2 + 25 });
+  }
+}
+
+/**
+ * Tree dimensions by type (shared by the sim generator and the view's decorative forest).
+ * shape 'cone': crown from crownBase..crownTop, radius crownR at the bottom.
+ * shape 'ellipsoid': crown centered at crownY with radii crownR (horizontal) / crownRy.
+ */
+export const TREE_TYPES = ['pine', 'round', 'redwood', 'poplar', 'birch'];
+export function makeTree(type, sc, x, z, y0, id = 0) {
+  const t = { id, x, z, type, s: sc, y0 };
+  switch (type) {
+    case 'pine': return Object.assign(t, { shape: 'cone', trunkR: 0.22 * sc, trunkTop: 1.8 * sc, crownBase: 1.2 * sc, crownTop: 9.5 * sc, crownR: 2.6 * sc });
+    case 'redwood': return Object.assign(t, { shape: 'cone', trunkR: 0.55 * sc, trunkTop: 9 * sc, crownBase: 8 * sc, crownTop: 30 * sc, crownR: 3.8 * sc });
+    case 'poplar': return Object.assign(t, { shape: 'ellipsoid', trunkR: 0.3 * sc, trunkTop: 3 * sc, crownY: 11.5 * sc, crownR: 2.4 * sc, crownRy: 9 * sc });
+    case 'birch': return Object.assign(t, { shape: 'ellipsoid', trunkR: 0.2 * sc, trunkTop: 3.5 * sc, crownY: 6.2 * sc, crownR: 2.7 * sc, crownRy: 3.3 * sc });
+    default: return Object.assign(t, { shape: 'ellipsoid', trunkR: 0.28 * sc, trunkTop: 3.0 * sc, crownY: 5.2 * sc, crownR: 3.0 * sc, crownRy: 2.6 * sc });
+  }
+}
+/** Weighted random tree type. */
+export function pickTreeType(r) { return r < 0.3 ? 'pine' : r < 0.52 ? 'round' : r < 0.68 ? 'redwood' : r < 0.82 ? 'poplar' : 'birch'; }
+
 export class Hole {
   constructor(params) {
     this.params = params;
@@ -42,8 +76,9 @@ export class Hole {
       seed: params.seed, par: params.par, L: params.L, ctrl: params.ctrl, fw: params.fairway,
       roughW: params.roughW, base: params.base, elev: params.elev, green: params.green,
       tee: params.tee, bunkers: params.bunkers, ponds: params.ponds, trees: params.trees, cup: params.cup,
-      wind: params.wind || { x: 0, z: 0 },
+      wind: params.wind || { x: 0, z: 0 }, rivers: params.rivers || [], outer: params.outer || [],
     });
+    for (const r of this.rivers) prepRiver(r);
     for (const b of this.bunkers) b._bound = blobBound(b);
     for (const p of this.ponds) p._bound = blobBound(p);
     this.green._bound = blobBound(this.green);
@@ -98,7 +133,39 @@ export class Hole {
     }
     const la = Math.abs(this.lat(x, z));
     h += 2.2 * smoothstep(this.fw.w + 4, this.fw.w + this.roughW + 18, la);
+    // big rolling hills out in the forest; faded to zero inside the playable corridor
+    const cor = this.corridor();
+    if (this.outer.length && (la > cor - 8 || z < -40 || z > this.L + 45)) {
+      const k = Math.max(smoothstep(cor - 8, cor + 40, la), smoothstep(-40, -90, z), smoothstep(this.L + 45, this.L + 95, z));
+      let o = 0;
+      for (const b of this.outer) {
+        const dx = x - b.x, dz = z - b.z;
+        o += b.a * exp(-(dx * dx + dz * dz) / (2 * b.s * b.s));
+      }
+      h += o * k;
+    }
     return h;
+  }
+
+  /** Nearest river info at (x, z): { d: distance to the river centerline, half, level } or null. */
+  riverAt(x, z) {
+    let best = null;
+    for (const r of this.rivers) {
+      const bb = r._bb;
+      if (x < bb[0] || x > bb[1] || z < bb[2] || z > bb[3]) continue;
+      const P = r.pts, S = r._segs;
+      for (let i = 0; i < P.length - 1; i++) {
+        const sg = S[i], ox = x - sg.cx, oz = z - sg.cz;
+        if (ox > sg.rad || ox < -sg.rad || oz > sg.rad || oz < -sg.rad) continue;
+        const ax = P[i][0], az = P[i][1], bx = P[i + 1][0], bz = P[i + 1][1];
+        const vx = bx - ax, vz = bz - az, L2 = vx * vx + vz * vz;
+        let t = L2 > 0 ? ((x - ax) * vx + (z - az) * vz) / L2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const dx = x - (ax + vx * t), dz = z - (az + vz * t), d = Math.sqrt(dx * dx + dz * dz);
+        if (!best || d < best.d) best = { d, half: r.w / 2, level: r.levels[i] + (r.levels[i + 1] - r.levels[i]) * t, river: r };
+      }
+    }
+    return best;
   }
 
   height(x, z, skipPonds = false) {
@@ -124,6 +191,13 @@ export class Hole {
       if (Math.abs(x - b.x) > b._bound + 2 || Math.abs(z - b.z) > b._bound + 2) continue;
       const d = blobDist(b, x, z);
       if (d < 1.0) h -= b.depth * smoothstep(1.0, -1.6, d);
+    }
+    if (!skipPonds && this.rivers.length) {
+      const rv = this.riverAt(x, z);
+      if (rv && rv.d < rv.half + 5) {   // channel + ~5 m banks (same profile as ponds)
+        const hp = rv.level - 0.06 - 1.3 * smoothstep(0, rv.half, rv.half - rv.d);
+        h = hp + (h - hp) * smoothstep(rv.half - 0.3, rv.half + 5, rv.d);
+      }
     }
     if (!skipPonds) {
       for (const p of this.ponds) {
@@ -160,6 +234,7 @@ export class Hole {
       if (Math.abs(x - p.x) > p._bound || Math.abs(z - p.z) > p._bound) continue;
       if (blobDist(p, x, z) < 0) return 'water';
     }
+    if (this.rivers.length) { const rv = this.riverAt(x, z); if (rv && rv.d < rv.half) return 'water'; }
     for (const b of this.bunkers) {
       if (Math.abs(x - b.x) > b._bound || Math.abs(z - b.z) > b._bound) continue;
       if (blobDist(b, x, z) < 0) return 'sand';
@@ -312,6 +387,55 @@ export function generateHoleParams(seed) {
     }
   }
 
+  // Rivers: a meandering creek crossing the hole, or running down one side of it.
+  params.rivers = [];
+  if (rand() < 0.5) {
+    const cor = fairway.w + roughW + 32;
+    const kind = par > 3 && rand() < 0.4 ? 'along' : 'cross';
+    const w = kind === 'along' ? U(6, 10) : U(7, 13);
+    const pts = [];
+    if (kind === 'cross') {
+      const zc = par === 3 ? U(40, Math.max(45, L - R0 - 28)) : U(Math.max(110, L * 0.3), L * 0.75), slant = U(-0.35, 0.35);
+      const mA = U(4, 12), mF = U(0.015, 0.035), mP = U(0, 6.3), xc = tmp.cx(zc);
+      for (let i = 0; i <= 36; i++) {
+        const u = -1 + (2 * i) / 36, lx = u * (cor + 110);
+        pts.push([xc + lx, zc + slant * lx + mA * sin(lx * mF + mP)]);
+      }
+    } else {
+      const side = sign(), za = L * U(0.15, 0.35), zb = L * U(0.62, 0.9), lat0 = fairway.w + U(6, 14);
+      const mA = U(2, 6), mF = U(0.02, 0.05), mP = U(0, 6.3);
+      for (let i = 0; i <= 40; i++) {
+        const t = i / 40, z = za - 60 + (zb - za + 120) * t;
+        const exitK = smoothstep(za, za - 60, z) + smoothstep(zb, zb + 60, z);  // ends curve out into the forest
+        const la = side * (lat0 + exitK * (cor + 80 - lat0) + mA * sin(z * mF + mP));
+        const d = tmp.cxd(Math.max(0, Math.min(L, z)));
+        pts.push([tmp.cx(Math.max(0, Math.min(L, z))) + la * Math.sqrt(1 + d * d), z]);
+      }
+    }
+    const r = { kind, pts, w, levels: pts.map(() => 0) };
+    prepRiver(r);
+    const tH = new Hole({ ...params, rivers: [r] });
+    // must stay clear of the tee and the green (+fringe)
+    let ok = (tH.riverAt(0, 0)?.d ?? 1e9) > w / 2 + 40;
+    for (let i = 0; i < 48 && ok; i++) {
+      const th = (i / 48) * PI * 2;
+      let f = 1; for (const hm of green.harm) f += hm.a * cos(hm.k * th + hm.p);
+      const rr = R0 * f + FRINGE_WIDTH + 3;
+      if ((tH.riverAt(green.x + cos(th) * rr, green.z + sin(th) * rr)?.d ?? 1e9) < w / 2 + 2) ok = false;
+    }
+    if (ok) {
+      params.rivers.push(r);
+      params.bunkers = params.bunkers.filter(b => (tH.riverAt(b.x, b.z)?.d ?? 1e9) > w / 2 + b.R0 * Math.max(1, b.sx) + 3);
+      params.ponds = params.ponds.filter(p => (tH.riverAt(p.x, p.z)?.d ?? 1e9) > w / 2 + p.R0 * Math.max(1, p.sx) + 3);
+    }
+  }
+  // Big hills out in the forest (outside the corridor) so the surroundings aren't a flat field.
+  params.outer = [];
+  for (let i = 0; i < 22; i++) {
+    const z = U(-300, L + 300), side = sign(), cor = fairway.w + roughW + 32;
+    params.outer.push({ x: tmp.cx(Math.max(0, Math.min(L, z))) + side * (cor + U(40, 320)), z, s: U(40, 110), a: U(5, 26) });
+  }
+
   // Rescale green bumps so the putting surface isn't absurd (max 12% slope).
   let hole = new Hole(params);
   let maxSlope = 0;
@@ -333,6 +457,16 @@ export function generateHoleParams(seed) {
       lo = Math.min(lo, hole.height(p.x + lx * c - lz * s, p.z + lx * s + lz * c, true));
     }
     p.level = lo - 0.15;
+  }
+  // River water level: per point, just below the lower bank, then smoothed along the river.
+  for (const r of params.rivers) {
+    const raw = r.pts.map(([x, z], i) => {
+      const [nx, nz] = r.pts[Math.min(i + 1, r.pts.length - 1)], [px, pz] = r.pts[Math.max(i - 1, 0)];
+      let tx = nx - px, tz = nz - pz; const tl = len2(tx, tz) || 1; tx /= tl; tz /= tl;
+      const off = r.w / 2 + 0.6;
+      return Math.min(hole.height(x - tz * off, z + tx * off, true), hole.height(x + tz * off, z - tx * off, true)) - 0.25;
+    });
+    r.levels = raw.map((_, i) => { let s = 0, n = 0; for (let k = -2; k <= 2; k++) { const v = raw[i + k]; if (v !== undefined) { s += Math.min(v, raw[i]); n++; } } return s / n; });
   }
   hole = new Hole(params);
 
@@ -356,17 +490,17 @@ export function generateHoleParams(seed) {
     if (len2(x - green.x, z - green.z) < R0 + 10 || len2(x, z) < 14) return;
     for (const b of params.bunkers) if (blobDist(b, x, z) < 4) return;
     for (const p of params.ponds) if (blobDist(p, x, z) < 4) return;
-    const pine = rand() < 0.55, sc = U(0.8, 1.4);
-    const t = { id: trees.length, x, z, type: pine ? 'pine' : 'round', s: sc, y0: hole.height(x, z) };
-    if (pine) Object.assign(t, { trunkR: 0.22 * sc, trunkTop: 1.8 * sc, crownBase: 1.2 * sc, crownTop: 9.5 * sc, crownR: 2.6 * sc });
-    else Object.assign(t, { trunkR: 0.28 * sc, trunkTop: 3.0 * sc, crownY: 5.2 * sc, crownR: 3.0 * sc, crownRy: 2.6 * sc });
-    trees.push(t);
+    if (hole.rivers.length) { const rv = hole.riverAt(x, z); if (rv && rv.d < rv.half + 3) return; }
+    trees.push(makeTree(pickTreeType(rand()), U(0.8, 1.35), x, z, hole.height(x, z), trees.length));
   };
   for (const side of [-1, 1]) {
-    for (let z = -25; z < L + 35; z += U(5, 10)) {
-      const la = side * (fairway.w + roughW + U(-6, 22)), d = tmp.cxd(z);
-      addTree(hole.cx(z) + la * Math.sqrt(1 + d * d), z);
-      if (rand() < 0.4) addTree(hole.cx(z) + (la + side * U(5, 10)) * Math.sqrt(1 + d * d), z + U(-3, 3));
+    // thick belts: a ragged front row plus 2-3 rows behind it out to the corridor edge
+    for (let z = -25; z < L + 35; z += U(3, 6)) {
+      const la = side * (fairway.w + roughW + U(-6, 10)), d = tmp.cxd(z), k = Math.sqrt(1 + d * d);
+      addTree(hole.cx(z) + la * k, z);
+      if (rand() < 0.8) addTree(hole.cx(z) + (la + side * U(5, 10)) * k, z + U(-2, 2));
+      if (rand() < 0.7) addTree(hole.cx(z) + (la + side * U(11, 18)) * k, z + U(-2, 2));
+      if (rand() < 0.6) addTree(hole.cx(z) + (la + side * U(19, 28)) * k, z + U(-2, 2));
     }
   }
   if (par > 3) {

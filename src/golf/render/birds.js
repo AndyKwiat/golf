@@ -1,0 +1,322 @@
+// Ambient birds: flocks soaring high over the hole + small songbirds hopping between tree tops.
+// Render-only (never touches the sim). Seeded with mulberry32 so screenshots are stable; time
+// only advances through update(dt). Two InstancedMeshes; wing flapping happens in the vertex
+// shader (onBeforeCompile) from a per-vertex wing coordinate + per-instance flap params.
+import * as THREE from 'three';
+import { mulberry32 } from '../../sim/rng.js';
+
+const TAU = Math.PI * 2;
+const G = 9.81;
+const MAX_SKY = 6 * 9;
+const MAX_SMALL = 40;
+
+// Unit bird (wingspan 1, forward +z, up +y, wings along x). aWing = signed span fraction
+// (0 on the body) so the shader knows what to rotate. `body` scales the fuselage (songbirds are
+// chunkier relative to their wings than gulls/crows).
+function birdGeometry(body = 1, sweep = 1, fat = 1) {
+  const pos = [], wing = [];
+  const tri = (a, b, c) => { for (const v of [a, b, c]) { pos.push(v[0], v[1], v[2]); wing.push(v[0] / 0.5); } };
+  const B = (x, y, z) => [x * body, y * body, z * body];
+  // fuselage: two pyramids around a diamond ring + a tail fan
+  const nose = B(0, 0.005, 0.24), tail = B(0, 0, -0.16);
+  const ring = [B(0, 0.045 * fat, 0.04), B(0.05 * fat, 0, 0.04), B(0, -0.04 * fat, 0.04), B(-0.05 * fat, 0, 0.04)];
+  for (let i = 0; i < 4; i++) { const a = ring[i], b = ring[(i + 1) % 4]; tri(nose, b, a); tri(tail, a, b); }
+  tri(B(0, 0, -0.1), B(-0.07, 0, -0.3), B(0.07, 0, -0.3));
+  // wings: inner quad + swept outer triangle per side; root sits inside the body
+  for (const s of [-1, 1]) {
+    const r0 = [s * 0.03, 0.01, 0.1 * body], r1 = [s * 0.03, 0.01, -0.07 * body];
+    const m0 = [s * 0.26, 0.01, 0.07], m1 = [s * 0.26, 0.01, -0.1];
+    const tip = [s * 0.5, 0.01, -0.1 * sweep];
+    tri(r0, m0, r1); tri(r1, m0, m1); tri(m0, tip, m1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aWing', new THREE.Float32BufferAttribute(wing.map(w => (Math.abs(w) < 0.07 ? 0 : w)), 1));
+  return g;
+}
+
+// Lambert (fog + lights + tone mapping for free) with a flapping vertex stage.
+function birdMaterial(uniforms) {
+  const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide, flatShading: true });
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = uniforms.uTime;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        uniform float uTime;
+        attribute float aWing;
+        attribute vec4 aFlap;   // x: flap rate (rad/s), y: phase, z: glide 0..1, w: fold 0..1`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        {
+          float w = abs(aWing);
+          if (w > 0.0) {
+            float s = sin(uTime * aFlap.x + aFlap.y);
+            // flapping: big stroke; gliding: wings held in a slight dihedral with a faint tremble
+            float ang = mix(s * 0.95 + 0.15, 0.13 + s * 0.03, aFlap.z) * (0.65 + 0.6 * w);
+            float sx = sign(aWing);
+            float ax = abs(transformed.x);
+            transformed.y += ax * sin(ang);
+            transformed.x = sx * ax * cos(ang);
+            // folded (perched): wings tucked along the body
+            float f = aFlap.w;
+            transformed.x *= mix(1.0, 0.18, f);
+            transformed.y = mix(transformed.y, 0.03 + 0.02 * w, f);
+            transformed.z -= f * w * 0.18;
+          }
+        }`);
+  };
+  mat.customProgramCacheKey = () => 'golf-birds-v1';
+  return mat;
+}
+
+const _m = new THREE.Matrix4(), _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+
+// Orientation from velocity + acceleration: face travel direction, roll so "up" leans into the
+// turn (coordinated-turn bank = lift tilts toward the centripetal acceleration).
+function poseMatrix(out, p, v, a, scale, bankK = 1.4, maxBank = 0.75) {
+  _z.copy(v);
+  if (_z.lengthSq() < 1e-8) _z.set(0, 0, 1);
+  _z.normalize();
+  // centripetal (horizontal, ⟂ forward) part of the acceleration
+  const al = a.dot(_z);
+  _y.copy(a).addScaledVector(_z, -al); _y.y = 0;
+  const lat = _y.length(), lim = G * Math.tan(maxBank) / bankK;
+  if (lat > lim) _y.multiplyScalar(lim / lat);
+  _y.multiplyScalar(bankK); _y.y += G;
+  _x.crossVectors(_y, _z).normalize();
+  _y.crossVectors(_z, _x).normalize();
+  out.makeBasis(_x.multiplyScalar(scale), _y.multiplyScalar(scale), _z.multiplyScalar(scale));
+  out.setPosition(p);
+  return out;
+}
+
+export class Birds {
+  constructor(scene) {
+    this.scene = scene;
+    this.uniforms = { uTime: { value: 0 } };
+    const mk = (geo, n) => {
+      const flap = new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4);
+      flap.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('aFlap', flap);
+      const im = new THREE.InstancedMesh(geo, birdMaterial(this.uniforms), n);
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      im.count = 0;
+      im.frustumCulled = false;   // instances roam far from the origin
+      im.castShadow = false; im.receiveShadow = false;
+      scene.add(im);
+      return im;
+    };
+    this.skyMesh = mk(birdGeometry(1, 1.2), MAX_SKY);
+    this.smallMesh = mk(birdGeometry(1.4, 0.6, 1.9), MAX_SMALL);
+    this.flocks = []; this.sky = []; this.small = [];
+    this.t = 0;
+  }
+
+  build(seed, hole, trees, center) {
+    const rand = this.rand = mulberry32(((seed >>> 0) ^ 0xb12d5) >>> 0);
+    const U = (a, b) => a + (b - a) * rand();
+    this.t = 0;
+    this.hole = hole;
+    const col = new THREE.Color();
+
+    // ---- sky flocks: big lazy loops (ellipse + a harmonic) at 40–150 m over/around the hole
+    const groundY = hole.height(center.x, center.z);
+    this.flocks = []; this.sky = [];
+    const nF = 4 + Math.floor(rand() * 3);
+    for (let f = 0; f < nF; f++) {
+      const R = U(80, 400);
+      const fl = {
+        cx: center.x + U(-150, 150), cz: center.z + U(-0.45, 0.45) * Math.max(200, hole.L),
+        rx: R, rz: R * U(0.5, 1.1), rot: U(0, TAU), th0: U(0, TAU),
+        dir: rand() < 0.5 ? -1 : 1, w: U(9, 14) / R,          // ~9–14 m/s ground speed
+        h2: U(0.05, 0.2), ph2: U(0, TAU),
+        y: groundY + U(40, 150), dy: U(3, 12), phy: U(0, TAU),
+        v: rand() < 0.5,                                      // V formation, else loose cluster
+        n: 5 + Math.floor(rand() * 5),
+      };
+      fl.dark = rand() < 0.5 ? 0x1d1d22 : 0x3b3d44;           // crows vs. darker gulls
+      this.flocks.push(fl);
+      for (let i = 0; i < fl.n; i++) {
+        let ox, oz, oy = U(-1.5, 1.5);
+        if (fl.v) { const r = Math.ceil(i / 2), s = i % 2 ? 1 : -1; ox = s * r * U(1.8, 2.6); oz = -r * U(1.6, 2.4); }
+        else { ox = U(-9, 9); oz = U(-9, 9); oy = U(-4, 4); }
+        const b = {
+          fl, ox, oy, oz, span: U(1.0, 1.4),
+          wob: [U(0.2, 0.5), U(0, TAU), U(0.2, 0.5), U(0, TAU), U(0.4, 1.0)],
+          rate: TAU * U(2.4, 3.6), phase: U(0, TAU), glide: rand() < 0.3 ? 1 : 0, glideT: U(1, 6), glideTarget: 0,
+        };
+        b.glideTarget = b.glide;
+        col.set(fl.dark).multiplyScalar(U(0.85, 1.15));
+        this.skyMesh.setColorAt(this.sky.length, col);
+        this.sky.push(b);
+      }
+    }
+    this.skyMesh.count = this.sky.length;
+
+    // ---- songbirds: perch on crowns near the fairway, hop between trees 10–60 m apart
+    const near = trees.filter(t => {
+      const zc = Math.min(Math.max(t.z, 0), hole.L);
+      return t.z > -40 && t.z < hole.L + 60 && Math.abs(t.x - hole.cx(zc)) < 80;
+    });
+    this.perches = near.length ? near : trees.slice(0, 50);
+    const P = this.perches;
+    this.nbrs = P.map((t, i) => {
+      const out = [];
+      for (let j = 0; j < P.length; j++) {
+        if (j === i) continue;
+        const d = Math.hypot(P[j].x - t.x, P[j].z - t.z);
+        if (d >= 10 && d <= 60) out.push(j);
+      }
+      return out;
+    });
+    const tints = [0x7a5532, 0x8b6a45, 0x5f4a35, 0x3f63a8, 0x4f78b8, 0xb53a2a, 0xa8892f];
+    this.small = [];
+    const nS = P.length ? 30 + Math.floor(rand() * 11) : 0;
+    for (let i = 0; i < nS; i++) {
+      const tree = Math.floor(rand() * P.length);
+      const b = {
+        span: U(0.3, 0.4), rate: TAU * U(10, 13), phase: U(0, TAU),
+        state: 'perch', tree, p: this.perchPoint(P[tree]), yaw: U(0, TAU), timer: U(0.2, 6),
+        hop: 0, hopT: U(0.5, 2), from: null, to: null, s: 0, dur: 1, arc: 1, und: 0, fold: 1,
+        pos: new THREE.Vector3(), vel: new THREE.Vector3(0, 0, 1), acc: new THREE.Vector3(),
+      };
+      col.set(tints[Math.floor(rand() * tints.length)]).multiplyScalar(U(0.85, 1.15));
+      this.smallMesh.setColorAt(i, col);
+      this.small.push(b);
+    }
+    this.smallMesh.count = this.small.length;
+    for (const im of [this.skyMesh, this.smallMesh]) if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    this.update(0);
+  }
+
+  // a spot on the top of a crown: the tip of a pine, or on the upper cap of a round tree
+  perchPoint(t) {
+    const r = this.rand;
+    if (t.crownTop !== undefined && (t.shape === 'cone' || t.type === 'pine')) {
+      // the rendered pine (trees.js) ends in a small spike at ~1.03 of the crown height
+      const base = t.crownBase || 0;
+      return new THREE.Vector3(t.x, t.y0 + base + (t.crownTop - base) * 1.03 - 0.02, t.z);
+    }
+    const R = t.crownR || 3, Ry = t.crownRy || R, cy = t.crownY !== undefined ? t.crownY : (t.crownTop || 8) - Ry;
+    const a = r() * TAU, rr = Math.sqrt(r()) * 0.45 * R, k = rr / R;
+    return new THREE.Vector3(t.x + Math.cos(a) * rr, t.y0 + cy + Ry * Math.sqrt(Math.max(0, 1 - k * k)) - 0.1, t.z + Math.sin(a) * rr);
+  }
+
+  // ---- sky birds are a pure function of time (finite differences give velocity/acceleration)
+  flockPos(fl, t, out) {
+    const th = fl.th0 + fl.dir * fl.w * t;
+    const k = 1 + fl.h2 * Math.sin(2 * th + fl.ph2);
+    const ex = Math.cos(th) * fl.rx * k, ez = Math.sin(th) * fl.rz * k;
+    const c = Math.cos(fl.rot), s = Math.sin(fl.rot);
+    return out.set(fl.cx + ex * c - ez * s, fl.y + fl.dy * Math.sin(th * 2 + fl.phy), fl.cz + ex * s + ez * c);
+  }
+
+  skyBirdPos(b, t, out) {
+    const fl = b.fl, e = 0.25;
+    const p0 = this.flockPos(fl, t - e, _tmpA), p1 = this.flockPos(fl, t + e, _tmpB);
+    let fx = p1.x - p0.x, fz = p1.z - p0.z; const L = Math.hypot(fx, fz) || 1; fx /= L; fz /= L;
+    this.flockPos(fl, t, out);
+    const w = b.wob;
+    const wx = Math.sin(t * w[0] + w[1]) * 0.8, wy = Math.sin(t * w[4] + w[3]) * 0.5, wz = Math.sin(t * w[2] + w[3]) * 0.8;
+    // offset in the flock frame (right = (fz, -fx) when forward = (fx, fz))
+    const rx = b.ox + wx, rz = b.oz + wz;
+    out.x += -fz * rx + fx * rz; out.z += fx * rx + fz * rz; out.y += b.oy + wy;
+    return out;
+  }
+
+  update(dt, camera) {
+    if (!this.hole) return;
+    // tree-bird state machine in small substeps (advanceVisuals may pass several seconds)
+    let left = dt;
+    while (left > 1e-9) { const h = Math.min(left, 1 / 30); this.stepSmall(h); this.stepGlide(h); left -= h; }
+    if (dt === 0) this.stepSmall(0);
+    this.t += dt;
+    this.uniforms.uTime.value = this.t;
+
+    // sky birds
+    const t = this.t, e = 0.08, flap = this.skyMesh.geometry.attributes.aFlap;
+    this.sky.forEach((b, i) => {
+      const pm = this.skyBirdPos(b, t - e, _pm), p = this.skyBirdPos(b, t, _p), pp = this.skyBirdPos(b, t + e, _pp);
+      _v.subVectors(pp, pm).multiplyScalar(1 / (2 * e));
+      _a.copy(pp).add(pm).addScaledVector(p, -2).multiplyScalar(1 / (e * e));
+      this.skyMesh.setMatrixAt(i, poseMatrix(_m, p, _v, _a, b.span, 1.6));
+      flap.setXYZW(i, b.rate, b.phase, b.glide, 0);
+    });
+    flap.needsUpdate = true;
+    this.skyMesh.instanceMatrix.needsUpdate = true;
+
+    const sf = this.smallMesh.geometry.attributes.aFlap;
+    this.small.forEach((b, i) => {
+      if (b.state === 'perch') {
+        _v.set(Math.sin(b.yaw), 0, Math.cos(b.yaw)); _a.set(0, 0, 0);
+        _p.copy(b.p); _p.y += Math.sin(Math.PI * Math.min(1, b.hop / 0.22)) * 0.07 * (b.hop > 0 ? 1 : 0) + b.span * 0.1;
+        this.smallMesh.setMatrixAt(i, poseMatrix(_m, _p, _v, _a, b.span));
+      } else this.smallMesh.setMatrixAt(i, poseMatrix(_m, b.pos, b.vel, b.acc, b.span, 0.8, 0.5));
+      sf.setXYZW(i, b.rate, b.phase, 0, b.fold);
+    });
+    sf.needsUpdate = true;
+    this.smallMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  stepGlide(h) {
+    for (const b of this.sky) {
+      b.glideT -= h;
+      if (b.glideT <= 0) {
+        b.glideTarget = this.rand() < 0.35 ? 1 : 0;
+        b.glideT = b.glideTarget ? 2 + this.rand() * 5 : 3 + this.rand() * 8;
+      }
+      b.glide += Math.max(-h * 2.5, Math.min(h * 2.5, b.glideTarget - b.glide));
+    }
+  }
+
+  flightPos(b, s, out) {
+    const e = s * s * (3 - 2 * s) * 0.6 + s * 0.4;   // gentle take-off / landing
+    out.lerpVectors(b.from, b.to, e);
+    out.y += b.arc * 4 * s * (1 - s) + b.und * Math.sin(TAU * b.nUnd * s) * Math.sin(Math.PI * s);
+    return out;
+  }
+
+  stepSmall(h) {
+    const r = this.rand, P = this.perches;
+    for (const b of this.small) {
+      if (b.state === 'perch') {
+        b.timer -= h;
+        b.fold = Math.min(1, b.fold + h * 6);
+        if (b.hop > 0) { b.hop += h; if (b.hop > 0.22) b.hop = 0; }
+        b.hopT -= h;
+        if (b.hopT <= 0) { b.hopT = 0.6 + r() * 2.2; if (r() < 0.5) { b.hop = 1e-4; b.yaw += (r() - 0.5) * 2.4; } else b.yaw += (r() - 0.5) * 0.8; }
+        if (b.timer <= 0) {
+          const nb = this.nbrs[b.tree];
+          const next = nb.length ? nb[Math.floor(r() * nb.length)] : Math.floor(r() * P.length);
+          b.from = b.p.clone(); b.to = this.perchPoint(P[next]); b.tree = next;
+          const D = b.from.distanceTo(b.to);
+          b.dur = Math.max(0.8, D / (7 + r() * 4));
+          b.arc = 1 + D * (0.08 + r() * 0.1);
+          b.und = 0.25 + r() * 0.35; b.nUnd = Math.max(1, Math.round(D / 7));
+          b.s = 0; b.state = 'fly';
+          this.flightPos(b, 0, b.pos);
+        }
+      } else {
+        b.fold = Math.max(0, b.fold - h * 8);
+        b.s += h / b.dur;
+        if (b.s >= 1) {
+          b.state = 'perch'; b.p = b.to; b.timer = 2 + r() * 5; b.hopT = 0.4 + r();
+          _v.subVectors(b.to, b.from); b.yaw = Math.atan2(_v.x, _v.z);
+          continue;
+        }
+        const ds = 0.02;
+        const pm = this.flightPos(b, Math.max(0, b.s - ds), _pm), pp = this.flightPos(b, Math.min(1, b.s + ds), _pp);
+        this.flightPos(b, b.s, b.pos);
+        const dts = ds * b.dur;
+        b.vel.subVectors(pp, pm).multiplyScalar(1 / (2 * dts));
+        b.acc.copy(pp).add(pm).addScaledVector(b.pos, -2).multiplyScalar(1 / (dts * dts));
+        // don't pitch steeply with the undulation: keep the body mostly level
+        b.vel.y *= 0.4;
+      }
+    }
+  }
+}
+
+const _tmpA = new THREE.Vector3(), _tmpB = new THREE.Vector3();
+const _p = new THREE.Vector3(), _pm = new THREE.Vector3(), _pp = new THREE.Vector3();
+const _v = new THREE.Vector3(), _a = new THREE.Vector3();

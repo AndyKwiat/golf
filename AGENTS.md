@@ -3,8 +3,9 @@
 Two three.js games sharing one deterministic-sim architecture:
 
 - **Full golf** (`index.html`, `src/golf/`): one random par 3/4/5 hole at a time — doglegs,
-  fairway, rough, bunkers, ponds (95% of holes, often two), trees (balls bounce off them), strong
-  per-hole wind, draw/fade shot shaping, 14 clubs, auto-putter on the green. **Cheat mode is
+  fairway, rough, bunkers, ponds (95% of holes, often two), rivers (~50%), 5 tree species (balls
+  bounce off them) inside a deep surrounding forest, birds, strong per-hole wind, draw/fade shot
+  shaping, 14 clubs, auto-putter on the green. **Cheat mode is
   the default** (set power exactly, see the exact flight + roll before you shoot); normal mode is
   the Mario-Golf 3-press meter.
 - **Putting only** (`putting.html`, `src/sim/` + `src/main.js`): the original putting-green game.
@@ -37,7 +38,8 @@ normal|cheat --cam auto|overhead --grid 0|1 --hud 0|1 --width --height --out`, a
 `--eval "g.view.sun.castShadow = false; g.render()"` — great for isolating rendering artifacts by
 hiding things one at a time. The tool awaits `__golf.whenReady()` after load and after every
 step, so worker-painted textures are always final in the PNG. `shots/` is gitignored scratch.
-Close-ups: `--do "lookAtHazard(0)"` (bunker 0), `--do "lookAtHazard(0, 'pond', 6)"`,
+`--lite 1` (URL `?lite=1`) skips the deep forest, understory and shadows — use it for
+gameplay-only shots/tests; the full scene is slow in SwiftShader. Close-ups: `--do "lookAtHazard(0)"` (bunker 0), `--do "lookAtHazard(0, 'pond', 6)"`,
 `--do "placeBall(x, z, lookX, lookZ)"`.
 
 ## Layout
@@ -71,7 +73,19 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   between control points → doglegs). `lat(x,z)` = lateral offset from it. Looking from the tee,
   **+x is screen-LEFT** (the minimap is flipped to match). Aim = `atan2(dz, dx)`, ≈ π/2 at the tee;
   increasing aim turns right on screen.
-- Surfaces, priority: `oob > tee > green > fringe > water > sand > fairway > rough`. Green,
+- Surfaces, priority: `oob > tee > green > fringe > water (ponds, rivers) > sand > fairway > rough`.
+- Rivers (`params.rivers = [{kind: 'cross'|'along', pts: [[x,z]...], w, levels}]`): a polyline
+  centerline + width; `hole.riverAt(x,z)` → `{d, half, level}` (nearest segment, culled with
+  per-segment bounding squares — keep the culling margin ≥ any distance threshold you query).
+  Height carves a channel with ~5 m banks; water level per point = just below the lower bank,
+  smoothed along the river (rivers don't need to flow downhill — the water ribbon just follows
+  `levels`). They avoid tee and green; bunkers/ponds overlapping a river are dropped.
+- Trees: `makeTree(type, scale, x, z, y0)` / `TREE_TYPES` / `pickTreeType` in hole.js define the
+  five species and their collision volumes: pine & redwood = `shape: 'cone'` (redwood: 30 m tall,
+  clean trunk to ~8 m), round / poplar (columnar, ~20 m) / birch = `shape: 'ellipsoid'`. ball.js
+  collides by `shape`. The view uses the same `makeTree` for its decorative forest.
+- `params.outer`: big gaussian hills out in the forest, faded to zero inside the corridor (so they
+  never change play areas). Green,
   bunkers and ponds are "blobs" (circle + harmonics, rotated & stretched, `blobDist` < 0 inside).
   OOB = beyond `corridor()` laterally or past the ends.
 - Height = rolling gaussians + elevation ramp + side banks, flattened toward constants near green
@@ -179,11 +193,28 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
   only places the visible sun disk so it's in frame from the tee. With light at 14° the tree
   shadows were huge streaks. NeutralToneMapping, exposure 1.15, shadow intensity 0.6, bright
   hemisphere — the user asked for a cheerful look; keep it bright.
+- Forest (`planForest` → `buildTrees`): tier 0 = the sim's `hole.trees` (~550, collide), tier 1 =
+  decorative trees within 45 m outside the corridor, tier 2 = deep forest out to ~280 m beyond
+  the play rect (~17k, ultra-cheap 14-20 tri crowns, no shadows). Tiers 0/1 use **dynamic LOD**:
+  `refreshTreeLOD(cameraPos)` moves instances between a high-detail (shadow-casting) and a medium
+  mesh per (species, variant) bucket by distance (110 m), only when the camera moved > 8 m.
+  Understory bushes/rocks behind the first tree rows. A canopy coverage grid (`canopyGrid`) is
+  sent to the paint workers to darken the forest floor under trees; `forestFloor()` in paint.js
+  paints moss / needles / leaf litter / dirt / grass patches beyond the rough and out of bounds.
+  Beyond the planted forest the horizon ground uses a tiling canopy texture + tree-line rings.
+  Budget: ~3-4M tris/frame incl. shadows; headless SwiftShader takes seconds per first frame
+  (real GPUs are fine) — measure with `renderer.info` before adding more.
+- Water: rivers are Catmull-Rom ribbons at the river's levels; rivers and ponds share a
+  procedural ripple normal map whose offset scrolls (`this.flowing`, rivers flow ~0.3 m/s).
+  Reeds/cattails (`reedClump`, `reedMaterial` with a wind-sway vertex shader) line shores where
+  the surface is rough/oob/water.
+- Birds (`birds.js`, render-only, seeded): sky flocks looping 40-150 m up and songbirds hopping
+  between tier 0/1 tree tops; wing flapping is done in the vertex shader.
 - Trees (trees.js): unit-space geometry scaled per instance to the exact collision volumes.
   Pines = 7 whorls × 2 offset star-shaped drooping cones + needle texture; deciduous = cluster of
   noise-displaced spheres with vertex AO + leaf-speckle texture. 3 variants each, picked by hash.
-  **LOD**: full detail only for the ~200 in-play `hole.trees`; the decorative OOB forest uses
-  low-detail variants (keeps it ~2.2M tris/frame incl. shadows instead of ~5.7M).
+  Redwood / poplar / birch crowns: `redwoodCrown`, `blobCrown` options; trunks are neutral grey
+  and tinted per instance (birch white, redwood red-brown).
 - The horizon ground disk must sit below the lowest terrain (it once poked through a valley and
   looked like a grey "pond"). Raycast debugging (see git history) found it quickly.
 - Water needs an env map (PMREM of the sky dome, `Sky.envMap`) or it looks grey at grazing angles.

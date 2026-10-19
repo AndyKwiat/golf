@@ -9,7 +9,7 @@ import { GolfView } from './render/view.js';
 const params = new URLSearchParams(location.search);
 const seed = params.has('seed') ? Number(params.get('seed')) : randomSeed();
 const game = new GolfGame({ seed, mode: params.get('mode') === 'normal' ? 'normal' : 'cheat' });
-const view = new GolfView(document.getElementById('c'), game);
+const view = new GolfView(document.getElementById('c'), game, { lite: params.get('lite') === '1' });
 if (params.get('cam') === 'overhead') view.camMode = 'overhead';
 if (params.get('grid') === '0') view.setGrid(false);
 let paused = params.get('paused') === '1';

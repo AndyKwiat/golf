@@ -68,7 +68,7 @@ test('golf page boots, matches the node sim exactly, and plays a hole', async ()
   const server = await startServer(port);
   const browser = await launchBrowser();
   try {
-    const { page, errors } = await openGame(browser, port, { seed: 11, width: 900, height: 560 });
+    const { page, errors } = await openGame(browser, port, { seed: 11, width: 900, height: 560, lite: '1' });
     const st0 = await page.evaluate(() => window.__golf.state());
     assert.equal(st0.mode, 'cheat', 'cheat mode is the default');
 
