@@ -30,7 +30,7 @@ test('generated holes are sane across many seeds', () => {
     assert.equal(h.surface(h.tee.x, h.tee.z), 'tee', `seed ${s} tee`);
     assert.equal(h.surface(h.cup.x, h.cup.z), 'green', `seed ${s} cup`);
     assert.ok(h.slope(h.cup.x, h.cup.z) < 0.08, `seed ${s} cup slope`);
-    const range = { 3: [155, 270], 4: [420, 610], 5: [595, 780] }[h.par];
+    const range = { 3: [130, 235], 4: [325, 470], 5: [455, 600] }[h.par];   // meters (≈150-250 / 380-500 / 520-640 yd)
     assert.ok(h.length > range[0] && h.length < range[1], `seed ${s} par ${h.par} length ${h.length}`);
     for (const t of h.trees) assert.equal(h.surface(t.x, t.z), 'rough', `seed ${s} tree ${t.id} not in rough`);
     if (h.ponds.length) water++;

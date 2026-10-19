@@ -288,8 +288,12 @@ function draw(alpha, dtReal, snap) { updatePreview(); updateHud(preview); view.r
 let acc = 0, last = performance.now();
 function frame(now) {
   const dtReal = Math.min(0.25, (now - last) / 1000); last = now;
-  if (!paused) { acc += dtReal; while (acc >= DT) { simTick(); acc -= DT; } }
-  draw(paused ? 1 : acc / DT, paused ? 0 : dtReal, false);
+  // Hold Shift while the ball is in motion to fast-forward 2.5x (more fixed ticks per frame;
+  // the sim itself is unchanged, so results are identical).
+  const fast = game.phase === 'moving' && keys.has('shift');
+  $('ffwd').classList.toggle('show', fast);
+  if (!paused) { acc += dtReal * (fast ? 2.5 : 1); while (acc >= DT) { simTick(); acc -= DT; } }
+  draw(paused ? 1 : acc / DT, paused ? 0 : dtReal * (fast ? 2.5 : 1), false);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

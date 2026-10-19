@@ -195,8 +195,9 @@ export function generateHoleParams(seed) {
   const U = (a, b) => a + rand() * (b - a);
   const sign = () => (rand() < 0.5 ? -1 : 1);
   const par = [3, 4, 5][Math.floor(rand() * 3)];
-  // Lengths scale with the (video-game) club distances: SCALE = 1.3 vs. real-world yardages.
-  const L = (par === 3 ? U(125, 195) : par === 4 ? U(325, 430) : U(460, 540)) * SCALE;
+  // Realistic tournament yardages (path length incl. doglegs): par 3 ~150-250 yd,
+  // par 4 ~380-500 yd, par 5 ~520-640 yd. (With video-game drives, par 5s are reachable in two.)
+  const L = par === 3 ? U(137, 228) : par === 4 ? U(330, 432) : U(450, 552);
 
   // Centerline control points [z, x]. Doglegs: par 4s usually bend once, par 5s bend twice
   // (often an S). corners[] records each bend (z, turn direction) for hazards/trees.

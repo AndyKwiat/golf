@@ -91,8 +91,11 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   heavy damping inside → ball drops. Trunks reflect (also while rolling). Spatial hash, 10 m cells.
 - Units: the sim is **meters and m/s everywhere**; only the HUD converts (yards, feet on the
   green, mph for wind — helpers `yd()`, `ft()`, `MPH` in main.js). Distances are video-game long:
-  driver carries ~333 yd and totals ~350 yd; holes are scaled to match (`SCALE = 1.3` in
-  hole.js: par 3 ≈ 180–280 yd, par 4 ≈ 460–610 yd, par 5 ≈ 650–770 yd incl. doglegs).
+  driver carries ~333 yd and totals ~350 yd, but hole lengths are realistic (par 3 ≈ 150–250
+  yd, par 4 ≈ 365–500 yd, par 5 ≈ 515–630 yd incl. doglegs); dogleg offsets / fairway-bunker
+  positions are scaled up (`SCALE = 1.3` in hole.js) to suit the long drives.
+- Hold **Shift while the ball is moving** = 2.5× fast-forward (main.js runs more fixed ticks per
+  frame; the sim is unchanged).
 - Surface feel (tuned on purpose, see `SURF` in constants.js): a 5 m/s roll goes ~23 m on green,
   ~5 m on fairway, ~2 m in rough. Landing: driver runs ~13 m on fairway, ~3 m in rough; greens
   "grip" backspin (`grip`) so a 7i holds within ~11 m and wedges within ~3 m. Rough lie = 85%
