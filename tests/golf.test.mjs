@@ -234,3 +234,16 @@ test('surface speeds: green fastest, fairway slower, rough much slower; rough li
   // video-game distances: a full drive totals ~350 yd
   assert.ok(Math.abs(CLUBS[0].total * 1.0936 - 350) < 10, `driver total ${CLUBS[0].total * 1.0936} yd`);
 });
+
+test('hole variety: every theme appears, with cliffs, island greens, tree islands and plenty of hazards', () => {
+  const themes = new Set(); let cliffs = 0, islandGreens = 0, treeIslands = 0, bunkers = 0, ponds = 0;
+  for (let s = 1; s <= 60; s++) {
+    const g = new GolfGame({ seed: s }), h = g.hole;
+    themes.add(h.theme); cliffs += h.cliffs.length; treeIslands += h.islands.length; bunkers += h.bunkers.length; ponds += h.ponds.length;
+    if (h.ponds.some(p => p.island)) { islandGreens++; assert.equal(h.surface(h.cup.x, h.cup.z), 'green'); }
+    for (const t of h.islands) assert.equal(h.surface(t.x, t.z), 'rough', `seed ${s} tree island`);
+  }
+  assert.deepEqual([...themes].sort(), ['canyon', 'forest', 'lakes', 'links', 'parkland']);
+  assert.ok(cliffs >= 10 && islandGreens >= 2 && treeIslands >= 10, `cliffs ${cliffs} islandGreens ${islandGreens} treeIslands ${treeIslands}`);
+  assert.ok(bunkers / 60 >= 5 && ponds / 60 >= 1.1, `bunkers ${bunkers / 60} ponds ${ponds / 60}`);
+});

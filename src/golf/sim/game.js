@@ -68,7 +68,7 @@ export class GolfGame {
     this.curve = 0;
     if (lie === 'green') this.clubId = PUTTER;
     else this.clubId = this.suggestClub(d, lie);
-    this._caddie();
+    this._caddie(true);
   }
 
   /**
@@ -76,7 +76,8 @@ export class GolfGame {
    * ahead), set power, then correct the aim for wind/curve drift using the real simulator so
    * the default shot (what cheat mode previews) actually finishes on the target line.
    */
-  _caddie() {
+  _caddie(mayChangeClub = false) {
+    this._mayChangeClub = mayChangeClub;
     const club = this.club, b = this.ball;
     const tgt = this.suggestTarget(club);
     const tAng = atan2(tgt.z - b.z, tgt.x - b.x), tDist = len2(tgt.x - b.x, tgt.z - b.z);
@@ -107,25 +108,32 @@ export class GolfGame {
    */
   _avoidHazards() {
     const BAD = { water: 1, oob: 1 };
-    const evalShot = (aim, power) => {
-      const r = simulateShot(this.hole, this.launchFor(aim, power), { recordPath: false });
+    const evalShot = (aim, power, clubId = this.clubId) => {
+      const r = simulateShot(this.hole, this.launchFor(aim, power, clubId), { recordPath: false });
       const lie = r.result === 'holed' ? 'green' : r.result === 'rest' ? this.hole.surface(r.end.x, r.end.z) : r.result;
-      return { lie, d: this.hole.distToCup(r.end.x, r.end.z) };
+      return { lie, d: this.hole.distToCup(r.end.x, r.end.z), trees: r.treeHits };
     };
     const cur = evalShot(this.aim, this.power);
-    if (!BAD[cur.lie] && cur.lie !== 'sand') return;
+    if (!BAD[cur.lie] && cur.lie !== 'sand' && !cur.trees) return;
     const rank = { green: 0, fringe: 1, fairway: 1, tee: 1, rough: 3, sand: 6 };
     let best = null;
-    for (const dp of [1, 0.92, 0.84, 0.75, 0.65, 0.55]) {
-      for (const da of [0, -0.03, 0.03, -0.06, 0.06, -0.1, 0.1]) {
-        const p = this.power * dp, a = this.aim + da, r = evalShot(a, p);
-        if (BAD[r.lie]) continue;
-        const cost = rank[r.lie] * 25 + r.d + Math.abs(da) * 200;
-        if (!best || cost < best.cost) best = { a, p, cost };
+    // when the caddie picked the club itself (new lie), it may also try one/two clubs either side
+    const clubs = [this.clubId];
+    if (this._mayChangeClub) for (const dc of [1, -1, 2, -2]) { const c = this.clubId + dc; if (c >= 0 && c < PUTTER && (c !== 0 || this.lie === 'tee')) clubs.push(c); }
+    for (const c of clubs) {
+      const base = c === this.clubId ? this.power : Math.min(1, this.suggestPower(CLUBS[c], this.distToHole(), this.aim));
+      for (const dp of [1, 0.92, 0.84, 0.75, 0.65, 0.55]) {
+        for (const da of [0, -0.03, 0.03, -0.06, 0.06, -0.1, 0.1]) {
+          const p = Math.min(1, base * dp), a = this.aim + da, r = evalShot(a, p, c);
+          if (BAD[r.lie]) continue;
+          const cost = rank[r.lie] * 25 + r.d + Math.abs(da) * 200 + (r.trees ? 60 : 0) + (c === this.clubId ? 0 : 8);
+          if (!best || cost < best.cost) best = { a, p, c, cost };
+        }
+        if (best && best.cost < 40) break;
       }
-      if (best && best.cost < 60) break;
+      if (best && best.cost < 40) break;
     }
-    if (best) { this.aim = best.a; this.power = Math.round(best.p * 1000) / 1000; }
+    if (best) { this.aim = best.a; this.power = Math.round(best.p * 1000) / 1000; this.clubId = best.c; }
   }
 
   suggestClub(dist, lie = this.lie) {
@@ -357,7 +365,7 @@ export class GolfGame {
       tick: this.tick, seed: this.seed, mode: this.mode, phase: this.phase, par: this.hole.par,
       holeLength: this.hole.length, ball: { ...this.ball }, aim: this.aim, power: this.power,
       club: this.club.short, clubId: this.clubId, curve: this.curve, wind: { ...this.hole.wind }, lie: this.lie, strokes: this.strokes,
-      distToHole: this.distToHole(), cup: { ...this.hole.cup }, swing: this.swing ? { ...this.swing } : null,
+      theme: this.hole.theme, distToHole: this.distToHole(), cup: { ...this.hole.cup }, swing: this.swing ? { ...this.swing } : null,
       lastShot: this.lastShot, card: this.card.slice(),
     };
   }

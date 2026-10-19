@@ -22,3 +22,5 @@ a.link { color: #fff; font-size: 12px; opacity: .8; align-self: center; margin-l
 #shape-row.hidden { visibility: hidden; }
 #ffwd { position: absolute; top: 70px; left: 50%; transform: translateX(-50%); font-weight: 800; font-size: 18px; color: #ffe14d; text-shadow: 0 2px 6px rgba(0,0,0,.6); opacity: 0; transition: opacity .15s; }
 #ffwd.show { opacity: 1; }
+#info .theme { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; opacity: .8; margin-top: -2px; }
+@media (max-width: 1150px) { #wind { top: 70px; left: auto; right: 190px; transform: none; } }

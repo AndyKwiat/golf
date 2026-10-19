@@ -4,7 +4,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { BALL_R, CUP_R, FRINGE_WIDTH } from '../sim/constants.js';
-import { blobDist, cleanParams, makeTree, pickTreeType } from '../sim/hole.js';
+import { blobDist, pondDist, cleanParams, makeTree, pickTreeType } from '../sim/hole.js';
 import { mulberry32 } from '../../sim/rng.js';
 import { Sky, LIGHT_DIR as SUN_DIR, HORIZON, radialTexture } from './sky.js';
 import { pineCrown, redwoodCrown, blobCrown, farCrown, barkTrunk, bushGeometry, rockGeometry, reedClump, reedMaterial, waterNormalTexture, leafTexture, needleTexture } from './trees.js';
@@ -127,7 +127,7 @@ export class GolfView {
     this.greenTex = null;
 
     // In-play rectangle, snapped to the 1.5 m base grid
-    const STEP = 1.5, FINE = 6;   // base grid spacing; patches subdivide each base cell FINE x FINE (0.25 m)
+    const STEP = 1.5;   // base grid spacing; patches subdivide each base cell `fine` x `fine` (6 -> 0.25 m)
     let xmin = Infinity, xmax = -Infinity;
     const cor = h.corridor() + 6;
     for (let z = -45; z <= h.L + 50; z += 5) { const c = h.cx(z), d = h.cxd(z), k = Math.sqrt(1 + d * d); xmin = Math.min(xmin, c - cor * k); xmax = Math.max(xmax, c + cor * k); }
@@ -146,15 +146,16 @@ export class GolfView {
       zmin: Math.max(zmin, zmin + Math.floor((z0 - zmin) / STEP) * STEP), zmax: Math.min(zmax, zmin + Math.ceil((z1 - zmin) / STEP) * STEP),
     });
     const g = h.green, P = g.R0 * 1.45 + 6;
-    let rects = [{ ...snapRect(g.x - P, g.x + P, g.z - P, g.z + P), green: true, px: 0.04 }];
-    for (const b of h.bunkers) { const r = b._bound + 3; rects.push({ ...snapRect(b.x - r, b.x + r, b.z - r, b.z + r), px: 0.04 }); }
-    for (const p of h.ponds) { const r = p._bound + 4; rects.push({ ...snapRect(p.x - r, p.x + r, p.z - r, p.z + r), px: 0.08 }); }
+    let rects = [{ ...snapRect(g.x - P, g.x + P, g.z - P, g.z + P), green: true, px: 0.04, fine: 6 }];
+    for (const b of h.bunkers) { const r = b._bound + 3; rects.push({ ...snapRect(b.x - r, b.x + r, b.z - r, b.z + r), px: 0.04, fine: 6 }); }
+    // ponds: 0.5 m patches, and only small ones (big lakes / island ponds look fine on the base grid)
+    for (const p of h.ponds) { if (p.island || p._bound > 30) continue; const r = p._bound + 4; rects.push({ ...snapRect(p.x - r, p.x + r, p.z - r, p.z + r), px: 0.08, fine: 3 }); }
     for (let merged = true; merged;) {
       merged = false;
       outer: for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++) {
         const A = rects[a], B = rects[b];
         if (A.xmin < B.xmax && B.xmin < A.xmax && A.zmin < B.zmax && B.zmin < A.zmax) {
-          rects[a] = { xmin: Math.min(A.xmin, B.xmin), xmax: Math.max(A.xmax, B.xmax), zmin: Math.min(A.zmin, B.zmin), zmax: Math.max(A.zmax, B.zmax), green: A.green || B.green, px: Math.min(A.px, B.px) };
+          rects[a] = { xmin: Math.min(A.xmin, B.xmin), xmax: Math.max(A.xmax, B.xmax), zmin: Math.min(A.zmin, B.zmin), zmax: Math.max(A.zmax, B.zmax), green: A.green || B.green, px: Math.min(A.px, B.px), fine: Math.max(A.fine, B.fine) };
           rects.splice(b, 1); merged = true; break outer;
         }
       }
@@ -219,6 +220,9 @@ export class GolfView {
     const tp0 = performance.now();
     const baseH = (x, z) => h.height(x, z);
     for (const r of rects) {
+      // detail per patch, capped at ~400k vertices so one merged patch can't blow the triangle budget
+      let FINE = r.fine;
+      while (FINE > 2 && ((r.xmax - r.xmin) / STEP * FINE) * ((r.zmax - r.zmin) / STEP * FINE) > 4e5) FINE--;
       const nx = Math.round((r.xmax - r.xmin) / STEP) * FINE + 1, nz = Math.round((r.zmax - r.zmin) / STEP) * FINE + 1, d = STEP / FINE;
       const pp = new Float32Array(nx * nz * 3), pu = new Float32Array(nx * nz * 2), PH = new Float64Array(nx * nz);
       for (let j = 0; j < nz; j++) {
@@ -275,13 +279,20 @@ export class GolfView {
       }
       // polar mesh (the pond outline is star-shaped around its center) so depth can vary:
       // clear shallow edges show the muddy bed, the middle is deep dark teal
-      const RINGS = [0, 0.35, 0.6, 0.8, 0.92, 1], wpos = [], wcol = [], widx = [];
+      // (island ponds: rings run from the island shore out to the outer shore, deepest between)
+      const isl = p.island, RINGS = isl ? [0, 0.08, 0.25, 0.5, 0.75, 0.92, 1] : [0, 0.35, 0.6, 0.8, 0.92, 1], wpos = [], wcol = [], widx = [];
       wpos.push(p.x, 0, p.z); wcol.push(...waterTint(1));
       for (let r = 1; r < RINGS.length; r++) for (let i = 0; i < N; i++) {
-        const v = pts[i], t = RINGS[r];
-        wpos.push(p.x + (v.x - p.x) * t, 0, p.z + (v.y - p.z) * t); wcol.push(...waterTint(1 - t));
+        const v = pts[i];
+        let t = RINGS[r], depth = 1 - t;
+        if (isl) {
+          const L0 = Math.hypot(v.x - isl.x, v.y - isl.z) || 1, ri = Math.min(0.95, (isl.R - 0.4) / L0);
+          t = ri + (1 - ri) * RINGS[r]; depth = 4 * RINGS[r] * (1 - RINGS[r]);
+          wpos.push(isl.x + (v.x - isl.x) * t, 0, isl.z + (v.y - isl.z) * t);
+        } else wpos.push(p.x + (v.x - p.x) * t, 0, p.z + (v.y - p.z) * t);
+        wcol.push(...waterTint(depth));
       }
-      for (let i = 0; i < N; i++) widx.push(0, 1 + (i + 1) % N, 1 + i);
+      if (!isl) for (let i = 0; i < N; i++) widx.push(0, 1 + (i + 1) % N, 1 + i);
       for (let r = 1; r < RINGS.length - 1; r++) for (let i = 0; i < N; i++) {
         const a = 1 + (r - 1) * N + i, b = 1 + (r - 1) * N + (i + 1) % N, c2 = a + N, d = b + N;
         widx.push(a, b, c2, b, d, c2);
@@ -399,7 +410,7 @@ export class GolfView {
     const cor = h.corridor(), pr = this.playRect;
     const nearWater = (x, z, m) => {
       if (h.rivers.length) { const rv = h.riverAt(x, z); if (rv && rv.d < rv.half + m) return true; }
-      for (const p of h.ponds) if (Math.abs(x - p.x) < p._bound + m && Math.abs(z - p.z) < p._bound + m && blobDist(p, x, z) < m) return true;
+      for (const p of h.ponds) if (Math.abs(x - p.x) < p._bound + m && Math.abs(z - p.z) < p._bound + m && pondDist(p, x, z) < m) return true;
       return false;
     };
     const edgeDist = (x, z) => {          // how far outside the playable corridor (<0 = inside)
@@ -416,7 +427,7 @@ export class GolfView {
         const ed = edgeDist(tx, tz);
         if (ed < 1) continue;                                           // the corridor belongs to the sim trees
         if (valueNoise(tx / 70 + 3, tz / 70) < 0.24 && ed > 30) continue; // forest clearings / meadows
-        if (r1 > 0.88) continue;
+        if (r1 > (h.theme === 'links' ? 0.3 : 0.88)) continue;
         if (nearWater(tx, tz, 3)) continue;
         // species come in patches: blend the random pick with a slow noise field
         const type = pickTreeType((r2 * 0.55 + valueNoise(tx / 110, tz / 110 + 9) * 0.45) % 1);
@@ -608,6 +619,11 @@ export class GolfView {
         const x = p.x + lx * c - lz * s, z = p.z + lx * s + lz * c, L = Math.hypot(x - p.x, z - p.z) || 1;
         cluster(x, z, (x - p.x) / L, (z - p.z) / L, p.level);
       }
+      if (p.island) for (let a = 0; a < Math.PI * 2; a += 1.4 / p.island.R) {   // island shore (outward = toward the water)
+        if (rand() > 0.5) continue;
+        const nx = Math.cos(a), nz = Math.sin(a);
+        cluster(p.island.x + nx * p.island.R, p.island.z + nz * p.island.R, -nx, -nz, p.level);
+      }
     }
     for (const rv of h.rivers) {
       const P = rv.pts;
@@ -655,6 +671,11 @@ export class GolfView {
         let f = 1; for (const hm of p.harm) f += hm.a * Math.cos(hm.k * th + hm.p);
         const r = p.R0 * f + (rand() - 0.35) * 1.8 / p.sx, lx = Math.cos(th) * r * p.sx, lz = Math.sin(th) * r;
         add(p.x + lx * c - lz * s, p.z + lx * s + lz * c, p.level);
+      }
+      if (p.island) for (let a = 0; a < Math.PI * 2; a += 0.9 / p.island.R) {
+        if (rand() > 0.4) continue;
+        const r = p.island.R + (rand() - 0.65) * 1.8;
+        add(p.island.x + Math.cos(a) * r, p.island.z + Math.sin(a) * r, p.level);
       }
     }
     for (const rv of h.rivers) {

@@ -84,6 +84,18 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   five species and their collision volumes: pine & redwood = `shape: 'cone'` (redwood: 30 m tall,
   clean trunk to ~8 m), round / poplar (columnar, ~20 m) / birch = `shape: 'ellipsoid'`. ball.js
   collides by `shape`. The view uses the same `makeTree` for its decorative forest.
+- **Themes** (`params.theme`, picked from its own hashed RNG stream — consecutive seeds' first
+  `rand()` values correlate): parkland, lakes (big lakes, carry lakes, island greens on par 3s via
+  `pond.island` — always use `pondDist()` for ponds, never raw `blobDist`), canyon (cliffs, 2x
+  elevation, raised greens), links (wide, few trees, dunes, pot bunkers, dry fescue tint, sparse
+  surrounding forest), forest (narrow, hard doglegs up to ~150 m). `TH` in generateHoleParams
+  holds the per-theme knobs. HUD shows the theme name.
+- **Cliffs** (`params.cliffs`, `cliffSD`/`cliffHeight` in hole.js): `step` terrace lines (tee drops,
+  raised terraces to the green), `ravine` gullies (bottom is rough; 65% get a creek along the
+  bottom), `side` walls/drops along the corridor. Bunkers/ponds/trees avoid them; paint.js paints
+  layered rock on slopes > ~0.6, the minimap shows cliff faces.
+- **Tree islands** (`params.islands = [{x, z, R}]`): rough discs in the fairway with 3-8 trees.
+  The caddie's hazard avoidance also avoids tree hits. Tree belts have open meadow gaps.
 - `params.outer`: big gaussian hills out in the forest, faded to zero inside the corridor (so they
   never change play areas). Green,
   bunkers and ponds are "blobs" (circle + harmonics, rotated & stretched, `blobDist` < 0 inside).

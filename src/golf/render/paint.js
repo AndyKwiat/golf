@@ -1,6 +1,6 @@
 // Terrain texture painter (pure: no DOM / three.js) so it can run in Web Workers.
 // Bakes surface colors + exaggerated hillshade + green height tint + contours + bunker lips.
-import { blobDist } from '../sim/hole.js';
+import { blobDist, pondDist } from '../sim/hole.js';
 
 export const SHADE_MAIN = 3.0, SHADE_GREEN = 4.5;
 export const CONTOUR_STEP = 0.15;
@@ -49,7 +49,7 @@ export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light, canopy =
       let sd = Infinity;
       for (const p of h.ponds) {
         if (Math.abs(x - p.x) > p._bound + 6 || Math.abs(z - p.z) > p._bound + 6) continue;
-        sd = Math.min(sd, blobDist(p, x, z));
+        sd = Math.min(sd, pondDist(p, x, z));
       }
       if (h.rivers.length && sd > -1) { const rv = h.riverAt(x, z); if (rv) sd = Math.min(sd, rv.d - rv.half); }
       const mott = valueNoise(x * 0.9, z * 0.9) * 0.08 + valueNoise(x * 4, z * 4) * 0.04 - 0.06;
@@ -81,6 +81,7 @@ export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light, canopy =
         case 'water': cr = 0.18; cg = 0.3; cb = 0.22; break;
         default: {
           const k = 1 + n * 2.2 + mott * 1.6; cr = 0.25 * k; cg = 0.55 * k; cb = 0.17 * k;
+          if (h.theme === 'links') { cr = 0.4 * k; cg = 0.52 * k; cb = 0.2 * k; }   // dry fescue
           // forest floor: fades in beyond the playable rough, everywhere out of bounds
           const zc = z < 0 ? 0 : z > h.L ? h.L : z, la = Math.abs(h.lat(x, zc));
           const ff = surf === 'oob' ? 1 : smoothstep(h.fw.w + h.roughW - 4, h.fw.w + h.roughW + 10, la);
@@ -100,6 +101,16 @@ export function paintPixels(h, r, px, shadeAmt, withGrid, hstep, light, canopy =
       }
       // baked tree shadows (sun and trees are static, so these never pop)
       if (shadow) { const sh = sampleGrid(shadow, x, z); if (sh > 0) { const k = 1 - SHADOW_DARK * sh; cr *= k; cg *= k; cb *= k * 1.04; } }
+      // cliff faces / steep banks: exposed layered rock
+      if (surf !== 'green' && surf !== 'fringe' && surf !== 'water') {
+        const sl = Math.sqrt(gx * gx + gz * gz), rk = smoothstep(0.6, 1.2, sl);
+        if (rk > 0) {
+          const band = 0.5 + 0.5 * Math.sin(y * 2.2 + valueNoise(x * 0.3, z * 0.3) * 3), k = 0.85 + 0.25 * band + n * 3;
+          const rr = 0.5 * k, rg = 0.45 * k, rb = 0.38 * k;
+          cr += (rr - cr) * rk; cg += (rg - cg) * rk; cb += (rb - cb) * rk;
+          amt *= 0.7;
+        }
+      }
       // shorelines: ragged band of earth / wet mud / gravel, and a muddy stony bed under the water
       if (sd < 5 && surf !== 'green' && surf !== 'fringe' && surf !== 'sand') {
         const pb = hashf(Math.floor(x * 5), Math.floor(z * 5)), pb2 = hashf(Math.floor(x * 2.2) + 7, Math.floor(z * 2.2));

@@ -35,6 +35,30 @@ function makeHarm(rand, n, amp) {
   return out;
 }
 
+/** Pond signed distance (< 0 = water), honoring an optional island (e.g. an island green). */
+export function pondDist(p, x, z) {
+  const d = blobDist(p, x, z);
+  if (!p.island) return d;
+  return Math.max(d, p.island.R - len2(x - p.island.x, z - p.island.z));
+}
+
+/**
+ * Cliffs. kind 'step': a terrace edge along a straight line (n = unit normal, h > 0 = higher on
+ * the +n side), 'ravine': a gully along a line (depth, flat bottom half-width hw, wall width),
+ * 'side': a wall/drop alongside the hole at lateral offset `off` on `side`, over z in [za, zb].
+ */
+export function cliffSD(hole, c, x, z) {
+  if (c.kind === 'side') return c.side * hole.lat(x, Math.min(Math.max(z, 0), hole.L)) - c.off;
+  return (x - c.x) * c.nx + (z - c.z) * c.nz;
+}
+function cliffHeight(hole, c, x, z) {
+  const sd = cliffSD(hole, c, x, z);
+  if (c.kind === 'ravine') { const a = Math.abs(sd); return a > c.hw + c.wall ? 0 : -c.depth * (1 - smoothstep(c.hw, c.hw + c.wall, a)); }
+  let k = c.h * smoothstep(-c.w / 2, c.w / 2, sd);
+  if (c.kind === 'side') k *= smoothstep(c.za - 50, c.za, z) * smoothstep(c.zb + 50, c.zb, z);
+  return k;
+}
+
 /** Cache a river's bounding box (with bank margin). River: { pts: [[x,z]...], w, levels: [] } */
 function prepRiver(r) {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -77,6 +101,7 @@ export class Hole {
       roughW: params.roughW, base: params.base, elev: params.elev, green: params.green,
       tee: params.tee, bunkers: params.bunkers, ponds: params.ponds, trees: params.trees, cup: params.cup,
       wind: params.wind || { x: 0, z: 0 }, rivers: params.rivers || [], outer: params.outer || [],
+      theme: params.theme || 'parkland', cliffs: params.cliffs || [], islands: params.islands || [],
     });
     for (const r of this.rivers) prepRiver(r);
     for (const b of this.bunkers) b._bound = blobBound(b);
@@ -133,6 +158,7 @@ export class Hole {
     }
     const la = Math.abs(this.lat(x, z));
     h += 2.2 * smoothstep(this.fw.w + 4, this.fw.w + this.roughW + 18, la);
+    for (const c of this.cliffs) h += cliffHeight(this, c, x, z);
     // big rolling hills out in the forest; faded to zero inside the playable corridor
     const cor = this.corridor();
     if (this.outer.length && (la > cor - 8 || z < -40 || z > this.L + 45)) {
@@ -202,7 +228,7 @@ export class Hole {
     if (!skipPonds) {
       for (const p of this.ponds) {
         if (Math.abs(x - p.x) > p._bound + 6 || Math.abs(z - p.z) > p._bound + 6) continue;
-        const d = blobDist(p, x, z);
+        const d = pondDist(p, x, z);
         if (d < 5) {   // shore: blend from the pond bed up to the terrain over ~5 m (gentle banks)
           const hp = p.level - 0.06 - 1.6 * smoothstep(0, 4, -d);
           h = hp + (h - hp) * smoothstep(-0.3, 5, d);
@@ -232,13 +258,15 @@ export class Hole {
     }
     for (const p of this.ponds) {
       if (Math.abs(x - p.x) > p._bound || Math.abs(z - p.z) > p._bound) continue;
-      if (blobDist(p, x, z) < 0) return 'water';
+      if (pondDist(p, x, z) < 0) return 'water';
     }
     if (this.rivers.length) { const rv = this.riverAt(x, z); if (rv && rv.d < rv.half) return 'water'; }
     for (const b of this.bunkers) {
       if (Math.abs(x - b.x) > b._bound || Math.abs(z - b.z) > b._bound) continue;
       if (blobDist(b, x, z) < 0) return 'sand';
     }
+    for (const c of this.cliffs) if (c.kind === 'ravine' && Math.abs(cliffSD(this, c, x, z)) < c.hw + c.wall * 0.7) return 'rough';
+    for (const t of this.islands) if (len2(x - t.x, z - t.z) < t.R) return 'rough';   // tree islands
     if (Math.abs(la) < this.fairwayHalf(z)) return 'fairway';
     return 'rough';
   }
@@ -274,6 +302,16 @@ export function generateHoleParams(seed) {
   // par 4 ~380-500 yd, par 5 ~520-640 yd. (With video-game drives, par 5s are reachable in two.)
   const L = par === 3 ? U(137, 228) : par === 4 ? U(330, 432) : U(450, 552);
 
+  // Theme: gives each hole a distinct character (see AGENTS.md).
+  const tr = mulberry32(Math.imul(seed ^ 0x9e3779b9, 0x85ebca6b) >>> 0)();   // own stream: consecutive seeds would correlate
+  const theme = tr < 0.24 ? 'parkland' : tr < 0.44 ? 'lakes' : tr < 0.62 ? 'canyon' : tr < 0.8 ? 'links' : 'forest';
+  const TH = {
+    parkland: { trees: 0.75, fw: [15, 21], rough: [14, 22], dog: 1, bunk: 1, ponds: 1 },
+    lakes:    { trees: 0.6, fw: [16, 22], rough: [14, 20], dog: 0.9, bunk: 0.8, ponds: 1.6 },
+    canyon:   { trees: 0.6, fw: [16, 22], rough: [14, 20], dog: 1, bunk: 0.8, ponds: 0.6 },
+    links:    { trees: 0.15, fw: [22, 30], rough: [24, 34], dog: 0.6, bunk: 1.8, ponds: 0.6 },
+    forest:   { trees: 1, fw: [12, 16], rough: [11, 16], dog: 1.5, bunk: 0.8, ponds: 0.9 },
+  }[theme];
   // Centerline control points [z, x]. Doglegs: par 4s usually bend once, par 5s bend twice
   // (often an S). corners[] records each bend (z, turn direction) for hazards/trees.
   let ctrl;
@@ -283,34 +321,40 @@ export function generateHoleParams(seed) {
     const xa = U(-8, 8);
     if (rand() < 0.8) {
       const dir = sign(), za = L * U(0.55, 0.66);
-      ctrl = [[0, 0], [za, xa], [L, xa + dir * U(35, 85) * SCALE]];
+      const big = rand() < (theme === 'forest' ? 0.7 : 0.3);   // hard doglegs: up to ~150 m sideways
+      ctrl = [[0, 0], [za, xa], [L, xa + dir * (big ? U(95, 150) : U(35, 85) * SCALE) * Math.min(1.2, TH.dog)]];
       corners.push({ z: za, dir });
     } else ctrl = [[0, 0], [L * 0.6, xa], [L, xa + U(-15, 15)]];
   } else {
     const d1 = sign(), d2 = rand() < 0.65 ? -d1 : d1;
     const z1 = L * U(0.36, 0.44), z2 = L * U(0.68, 0.76);
-    const x1 = d1 * U(12, 35) * SCALE, x2 = x1 + d2 * U(30, 70) * SCALE;
+    const big = rand() < (theme === 'forest' ? 0.6 : 0.25);
+    const x1 = d1 * U(12, 35) * SCALE * TH.dog, x2 = x1 + d2 * (big ? U(90, 140) : U(30, 70) * SCALE);
     ctrl = [[0, 0], [z1, x1], [z2, x2], [L, x2 + sign() * U(10, 40) * SCALE]];
     corners.push({ z: z1, dir: Math.sign(x2 - x1) || 1 }, { z: z2, dir: Math.sign(ctrl[3][1] - x2) || 1 });
   }
 
   const fairway = {
-    w: U(14, 21), z0: par === 3 ? L - 50 : U(70, 120), z1: L - 6,
+    w: U(TH.fw[0], TH.fw[1]), z0: par === 3 ? L - 50 : U(70, 120), z1: L - 6,
     wobble: [{ a: U(0.06, 0.14), f: U(0.01, 0.03), p: U(0, 6.3) }, { a: U(0.03, 0.08), f: U(0.04, 0.07), p: U(0, 6.3) }],
   };
-  const roughW = U(14, 22);
-  const elev = (rand() - 0.45) * (par === 3 ? 18 : 12);
+  const roughW = U(TH.rough[0], TH.rough[1]);
+  const elev = (rand() - 0.45) * (par === 3 ? 18 : 12) * (theme === 'canyon' ? 2 : 1);
 
-  const params = { seed, par, L, ctrl, fairway, roughW, elev, base: [], green: null, tee: { x: 0, z: 0 }, bunkers: [], ponds: [], trees: [], cup: { x: 0, z: 0 } };
+  const params = { seed, par, L, ctrl, fairway, roughW, elev, theme, base: [], cliffs: [], islands: [], green: null, tee: { x: 0, z: 0 }, bunkers: [], ponds: [], trees: [], cup: { x: 0, z: 0 } };
   const tmp = new Hole({ ...params, green: { x: 0, z: L, R0: 10, harm: [], bumps: [], lift: 0 }, trees: [] });
 
   for (let i = 0; i < 16; i++) {
     const z = U(-40, L + 60), s = U(18, 50);
     params.base.push({ x: tmp.cx(z) + U(-90, 90), z, s, a: sign() * U(0.8, 4) * (s / 35) });
   }
+  if (theme === 'links') for (let i = 0; i < 40; i++) {     // dunes: lots of small humps and hollows
+    const z = U(-20, L + 40), s = U(6, 16);
+    params.base.push({ x: tmp.cx(Math.min(Math.max(z, 0), L)) + U(-70, 70), z, s, a: sign() * U(0.8, 2.6) });
+  }
   // green
   const R0 = par === 3 ? U(11, 14) : U(12, 16);
-  const green = { x: tmp.cx(L), z: L, R0, rot: 0, sx: 1, harm: makeHarm(rand, 3, 0.14), bumps: [], lift: 0.5 };
+  const green = { x: tmp.cx(L), z: L, R0, rot: 0, sx: 1, harm: makeHarm(rand, 3, 0.14), bumps: [], lift: theme === 'canyon' ? U(1.5, 3.5) : 0.5 };
   const nb = 5 + Math.floor(rand() * 5);
   for (let i = 0; i < nb; i++) {
     const a = rand() * PI * 2, r = Math.sqrt(rand()) * R0 * 1.1, s = U(3, 7);
@@ -318,9 +362,28 @@ export function generateHoleParams(seed) {
   }
   params.green = green;
 
+  // Cliffs: canyon holes get 1-2, others occasionally one.
+  const along0 = z => { const d = tmp.cxd(Math.min(Math.max(z, 0), L)), l = Math.sqrt(1 + d * d); return [d / l, 1 / l]; };   // unit play direction (x,z)
+  const crossCliff = (kind, z, extra) => { const [ux, uz] = along0(z); return { kind, x: tmp.cx(Math.min(Math.max(z, 0), L)), z, nx: ux, nz: uz, ...extra }; };
+  const nCliff = theme === 'canyon' ? 1 + (rand() < 0.5 ? 1 : 0) : rand() < 0.15 ? 1 : 0;
+  const usedZ = [];
+  for (let i = 0; i < nCliff; i++) {
+    const kinds = par === 3 ? ['teeDrop', 'ravine', 'side'] : ['teeDrop', 'ravine', 'terrace', 'side'];
+    const k = kinds[Math.floor(rand() * kinds.length)];
+    const zMax = L - R0 - 50;
+    let c = null;
+    if (k === 'teeDrop' && zMax > 60) c = crossCliff('step', U(45, Math.min(90, zMax)), { h: -U(8, 18), w: U(4, 7) });
+    else if (k === 'ravine' && zMax > 70) c = crossCliff('ravine', par === 3 ? U(60, zMax) : U(L * 0.35, Math.min(L * 0.7, zMax)), { depth: U(6, 14), hw: U(5, 10), wall: U(5, 9) });
+    else if (k === 'terrace' && zMax > L * 0.5) c = crossCliff('step', U(L * 0.5, Math.min(L * 0.8, zMax)), { h: U(5, 12), w: U(4, 7) });
+    else if (k === 'side') { const up = rand() < 0.6; c = { kind: 'side', side: sign(), off: fairway.w + U(6, 14), h: up ? U(8, 20) : -U(8, 15), w: U(4, 7), za: U(0, L * 0.4), zb: U(L * 0.6, L) }; }
+    if (!c || usedZ.some(z => Math.abs(z - c.z) < 60)) continue;
+    if (c.z !== undefined) usedZ.push(c.z);
+    params.cliffs.push(c);
+  }
+
   // greenside bunkers
   const approach = atan2(L - (L - 40), green.x - tmp.cx(L - 40)); // direction of play into the green
-  const ngb = par === 3 ? 2 + Math.floor(rand() * 2) : 1 + Math.floor(rand() * 3);
+  const ngb = Math.round((par === 3 ? 3 + Math.floor(rand() * 3) : 2 + Math.floor(rand() * 3)) * Math.min(1.4, TH.bunk));
   for (let i = 0; i < ngb; i++) {
     const th = approach + PI + sign() * U(0.6, 2.4); // around the green, not dead front
     const rb = U(3, 5.5);
@@ -331,13 +394,31 @@ export function generateHoleParams(seed) {
   if (par > 3) {
     const zs = (par === 4 ? [U(190, 250)] : [U(190, 250), U(370, 430)]).map(z => z * SCALE);
     if (rand() < 0.5) zs.push(U(140, 200) * SCALE);
-    for (const z of zs) {
-      if (z > L - 70) continue;
-      const side = sign(), d = tmp.cxd(z);
-      const lat = side * fairway.w * U(0.6, 1.15);
-      params.bunkers.push({ x: tmp.cx(z) + lat * Math.sqrt(1 + d * d), z, R0: U(4, 7), rot: atan2(1, d), sx: U(1.5, 2.6), harm: makeHarm(rand, 3, 0.15), depth: 0.6 });
+    if (rand() < 0.6) zs.push(U(Math.max(100, L * 0.35), L - 90));
+    for (const z0 of zs) {
+      if (z0 > L - 70) continue;
+      const n = 1 + Math.floor(rand() * 3 * Math.min(1.3, TH.bunk));          // bunker groups
+      for (let j = 0; j < n; j++) {
+        const z = z0 + U(-18, 18), side = sign(), d = tmp.cxd(z);
+        const lat = side * fairway.w * U(0.55, 1.2);
+        params.bunkers.push({ x: tmp.cx(z) + lat * Math.sqrt(1 + d * d), z, R0: U(3.5, 7), rot: atan2(1, d), sx: U(1.5, 2.6), harm: makeHarm(rand, 3, 0.15), depth: 0.6 });
+      }
+    }
+    // cross bunker: a short wide trap across the fairway in front of the green or the layup zone
+    if (rand() < 0.35) {
+      const z = L - R0 - U(30, 60), d = tmp.cxd(z);
+      params.bunkers.push({ x: tmp.cx(z) + U(-5, 5), z, R0: U(3, 4.5), rot: atan2(1, d) + PI / 2, sx: U(2.8, 4), harm: makeHarm(rand, 3, 0.12), depth: 0.7 });
     }
   }
+  if (theme === 'links') {   // pot bunkers: small, deep, everywhere
+    const n = 8 + Math.floor(rand() * 8);
+    for (let j = 0; j < n; j++) {
+      const z = U(par === 3 ? L * 0.4 : 90, L - R0 - 6), d = tmp.cxd(z);
+      params.bunkers.push({ x: tmp.cx(z) + U(-1, 1) * (fairway.w + 6) * Math.sqrt(1 + d * d), z, R0: U(1.8, 3), rot: U(0, PI), sx: U(1, 1.3), harm: makeHarm(rand, 3, 0.1), depth: 1.1 });
+    }
+  }
+  // no bunkers on cliff faces / ravines
+  params.bunkers = params.bunkers.filter(b => params.cliffs.every(c => Math.abs(cliffSD(tmp, c, b.x, b.z)) > (c.kind === 'ravine' ? c.hw + c.wall : c.w) + b.R0 * Math.max(1, b.sx) + 4));
   // Water hazards: build a list of candidate ponds by hole type, keep the ones that fit.
   const pondCands = [];
   const along = z => atan2(1, tmp.cxd(z));                    // direction of play at z (angle in xz)
@@ -363,6 +444,17 @@ export function generateHoleParams(seed) {
     if (rand() < 0.45) pondCands.push(rand() < 0.5 ? greenFront() : greenSide());
   }
   if (rand() < 0.5) pondCands.push(sidePond(L * U(0.3, 0.8), sign()));   // fallback / bonus
+  if (theme === 'lakes') {
+    // big water: island green (par 3), a lake biting into the fairway, a lake to carry off the tee
+    if (par === 3 && rand() < 0.6) {
+      pondCands.unshift({ x: green.x, z: green.z, R0: R0 + U(13, 20), rot: U(0, PI), sx: U(1.1, 1.5),
+        island: { x: green.x, z: green.z, R: R0 * 1.3 + FRINGE_WIDTH + 3 } });
+    }
+    const bigSide = () => { const z = L * U(0.3, 0.75), R = U(24, 40); return { ...at(z, sign() * (fairway.w * 0.3 + R * 0.8)), R0: R, rot: along(z), sx: U(1.4, 2.3) }; };
+    const carry = () => { const z = U(80, Math.min(150, L - R0 - 60)), R = U(16, 26); return { ...at(z, U(-10, 10)), R0: R, rot: along(z) + PI / 2, sx: U(2, 3) }; };
+    pondCands.unshift(rand() < 0.5 ? bigSide() : carry());
+    if (rand() < 0.5) pondCands.splice(1, 0, bigSide());
+  } else if (rand() < 0.3 * TH.ponds) pondCands.push(sidePond(L * U(0.2, 0.9), sign()));
   // green outline sample points, so ponds can come close to the green without touching it
   green._bound = blobBound(green);
   const gEdge = [];
@@ -374,22 +466,31 @@ export function generateHoleParams(seed) {
   }
   let kept = 0;
   for (const p of pondCands) {
-    if (kept >= 2) break;
+    if (kept >= (theme === 'lakes' ? 3 : 2) || (kept >= 1 && rand() > TH.ponds)) break;
     p.harm = makeHarm(rand, 3, 0.12);
     p.level = 0;
     p._bound = blobBound(p);
-    const okGreen = blobDist(p, green.x, green.z) > 0 && gEdge.every(([x, z]) => blobDist(p, x, z) > 0);
+    const okGreen = gEdge.every(([x, z]) => pondDist(p, x, z) > 0);
+    const okCliff = params.cliffs.every(c => Math.abs(cliffSD(tmp, c, p.x, p.z)) > p._bound + 10);
     const okTee = len2(p.x, p.z) > p._bound + 35;
     const okOthers = params.ponds.every(q => len2(p.x - q.x, p.z - q.z) > (p._bound + q._bound) * 0.8);
-    if (okGreen && okTee && okOthers) {
+    if (okGreen && okTee && okOthers && okCliff) {
       params.ponds.push(p); kept++;
-      params.bunkers = params.bunkers.filter(b => blobDist(p, b.x, b.z) > b.R0 * Math.max(1, b.sx) + 3);
+      params.bunkers = params.bunkers.filter(b => pondDist(p, b.x, b.z) > b.R0 * Math.max(1, b.sx) + 3);
     }
   }
 
   // Rivers: a meandering creek crossing the hole, or running down one side of it.
   params.rivers = [];
-  if (rand() < 0.5) {
+  const rav = params.cliffs.find(c => c.kind === 'ravine');
+  if (rav && rand() < 0.65) {   // creek running along the bottom of the ravine
+    const cor = fairway.w + roughW + 32, tx = -rav.nz, tz = rav.nx, pts = [];
+    const mA = U(1, Math.max(1.2, rav.hw - 4)), mF = U(0.02, 0.05), mP = U(0, 6.3);
+    for (let i = 0; i <= 36; i++) { const u = (-1 + (2 * i) / 36) * (cor + 110), m = mA * sin(u * mF + mP); pts.push([rav.x + tx * u + rav.nx * m, rav.z + tz * u + rav.nz * m]); }
+    const r = { kind: 'cross', pts, w: Math.min(9, rav.hw * 1.2), levels: pts.map(() => 0) };
+    prepRiver(r);
+    params.rivers.push(r);
+  } else if (rand() < 0.5) {
     const cor = fairway.w + roughW + 32;
     const kind = par > 3 && rand() < 0.4 ? 'along' : 'cross';
     const w = kind === 'along' ? U(6, 10) : U(7, 13);
@@ -455,6 +556,7 @@ export function generateHoleParams(seed) {
       const r = p.R0 * f + 0.5, lx = cos(th) * r * p.sx, lz = sin(th) * r;
       const c = cos(p.rot), s = sin(p.rot);
       lo = Math.min(lo, hole.height(p.x + lx * c - lz * s, p.z + lx * s + lz * c, true));
+      if (p.island) lo = Math.min(lo, hole.height(p.island.x + cos(th) * (p.island.R + 0.5), p.island.z + sin(th) * (p.island.R + 0.5), true));
     }
     p.level = lo - 0.15;
   }
@@ -482,25 +584,41 @@ export function generateHoleParams(seed) {
   }
   params.cup = cup || (best ? { x: best.x, z: best.z } : { x: green.x, z: green.z });
 
-  // Trees: belts along both sides, a few in the rough, a backdrop behind the green.
+  // Tree islands: clumps of trees in the middle of the fairway, ringed by rough.
+  const nIsl = par === 3 ? 0 : Math.floor(rand() * ({ parkland: 3, forest: 4, lakes: 2, canyon: 2, links: 1.6 }[theme]));
+  for (let i = 0, tries = 0; i < nIsl && tries < 30; tries++) {
+    const z = U(L * 0.25, L - R0 - 70), d = tmp.cxd(z), R = U(5, 10);
+    const x = hole.cx(z) + U(-0.4, 0.4) * fairway.w * Math.sqrt(1 + d * d);
+    if (len2(x, z) < 90) continue;
+    if (params.bunkers.some(b => blobDist(b, x, z) < R + 4) || params.ponds.some(p => pondDist(p, x, z) < R + 6)) continue;
+    if (hole.rivers.length) { const rv = hole.riverAt(x, z); if (rv && rv.d < rv.half + R + 6) continue; }
+    if (params.cliffs.some(c => Math.abs(cliffSD(hole, c, x, z)) < R + 12)) continue;
+    if (params.islands.some(t => len2(t.x - x, t.z - z) < 60)) continue;
+    params.islands.push({ x, z, R }); i++;
+  }
+  hole = new Hole(params);
+  // Trees: belts along both sides (with open meadow gaps), islands, a backdrop behind the green.
   const trees = [];
+  const gaps = [-1, 1].map(() => { const g = []; const n = Math.floor(rand() * (theme === 'forest' ? 1.5 : 3.5)); for (let i = 0; i < n; i++) { const z = U(0, L); g.push([z, z + U(40, 120)]); } return g; });
+  const dens = (side, z) => TH.trees * (gaps[side > 0 ? 1 : 0].some(([a, b]) => z > a && z < b) ? 0.08 : 1);
   const addTree = (x, z) => {
     const s = hole.surface(x, z);
     if (s !== 'rough') return;
     if (len2(x - green.x, z - green.z) < R0 + 10 || len2(x, z) < 14) return;
     for (const b of params.bunkers) if (blobDist(b, x, z) < 4) return;
-    for (const p of params.ponds) if (blobDist(p, x, z) < 4) return;
+    for (const p of params.ponds) if (pondDist(p, x, z) < 4) return;
     if (hole.rivers.length) { const rv = hole.riverAt(x, z); if (rv && rv.d < rv.half + 3) return; }
+    if (hole.slope(x, z) > 1.1) return;   // not on cliff faces
     trees.push(makeTree(pickTreeType(rand()), U(0.8, 1.35), x, z, hole.height(x, z), trees.length));
   };
   for (const side of [-1, 1]) {
     // thick belts: a ragged front row plus 2-3 rows behind it out to the corridor edge
     for (let z = -25; z < L + 35; z += U(3, 6)) {
-      const la = side * (fairway.w + roughW + U(-6, 10)), d = tmp.cxd(z), k = Math.sqrt(1 + d * d);
-      addTree(hole.cx(z) + la * k, z);
-      if (rand() < 0.8) addTree(hole.cx(z) + (la + side * U(5, 10)) * k, z + U(-2, 2));
-      if (rand() < 0.7) addTree(hole.cx(z) + (la + side * U(11, 18)) * k, z + U(-2, 2));
-      if (rand() < 0.6) addTree(hole.cx(z) + (la + side * U(19, 28)) * k, z + U(-2, 2));
+      const la = side * (fairway.w + roughW + U(-6, 10)), d = tmp.cxd(z), k = Math.sqrt(1 + d * d), D = dens(side, z);
+      if (rand() < D) addTree(hole.cx(z) + la * k, z);
+      if (rand() < 0.8 * D) addTree(hole.cx(z) + (la + side * U(5, 10)) * k, z + U(-2, 2));
+      if (rand() < 0.7 * D) addTree(hole.cx(z) + (la + side * U(11, 18)) * k, z + U(-2, 2));
+      if (rand() < 0.6 * D) addTree(hole.cx(z) + (la + side * U(19, 28)) * k, z + U(-2, 2));
     }
   }
   if (par > 3) {
@@ -519,6 +637,10 @@ export function generateHoleParams(seed) {
     }
   }
   for (let i = 0; i < 14; i++) addTree(green.x + U(-45, 45), L + R0 + U(10, 40));
+  for (const t of params.islands) {
+    const n = 3 + Math.floor(rand() * 6);
+    for (let i = 0; i < n; i++) { const a = rand() * PI * 2, r = Math.sqrt(rand()) * t.R * 0.65; addTree(t.x + cos(a) * r, t.z + sin(a) * r); }
+  }
   params.trees = trees;
   // Wind: strong and per-hole. 3-13 m/s from any direction.
   const wa = rand() * PI * 2, ws = U(3, 13);

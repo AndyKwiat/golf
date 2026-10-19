@@ -111,7 +111,9 @@ function buildMinimap() {
   const x = c.getContext('2d'), img = x.createImageData(W, H);
   const COL = { rough: [52, 110, 42], fairway: [92, 170, 66], green: [110, 205, 90], fringe: [80, 155, 60], sand: [225, 205, 150], water: [50, 120, 200], tee: [100, 180, 75], oob: [34, 70, 30] };
   for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
-    const p = mmT.toW(i + 0.5, j + 0.5), col = COL[h.surface(p.x, p.z)] || [0, 0, 0], o = (j * W + i) * 4;
+    const p = mmT.toW(i + 0.5, j + 0.5), o = (j * W + i) * 4;
+    let col = COL[h.surface(p.x, p.z)] || [0, 0, 0];
+    if (h.cliffs.length && h.slope(p.x, p.z) > 0.6) col = [128, 112, 95];   // cliff faces
     img.data[o] = col[0]; img.data[o + 1] = col[1]; img.data[o + 2] = col[2]; img.data[o + 3] = 255;
   }
   x.putImageData(img, 0, 0);
@@ -167,6 +169,7 @@ function toast(html, secs = 2.2) {
   const t = $('toast'); t.innerHTML = html; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), secs * 1000);
 }
+const THEME_NAMES = { parkland: 'Parkland', lakes: 'Lakeside', canyon: 'Canyon', links: 'Links', forest: 'Deep Forest' };
 const SCORE = { '-4': 'Condor!!', '-3': 'Albatross!', '-2': 'Eagle!', '-1': 'Birdie!', 0: 'Par', 1: 'Bogey', 2: 'Double bogey', 3: 'Triple bogey' };
 function handleEvents() {
   for (const e of game.takeEvents()) {
@@ -203,6 +206,7 @@ function updateHud(preview) {
   const total = g.card.reduce((a, c) => a + c.strokes - c.par, 0);
   $('info').innerHTML = `
     <div class="big">Par ${h.par} · ${yd(h.length)}</div>
+    <div class="theme">${THEME_NAMES[h.theme] || ''}</div>
     <div>Stroke: <b>${g.strokes + (g.phase === 'holed' || g.phase === 'moving' ? 0 : 1)}</b> · Lie: <b>${g.phase === 'moving' ? (g.ball.air ? 'in flight' : 'rolling') : g.lie}</b></div>
     <div>To pin: <b>${g.lie === 'green' && g.phase !== 'moving' ? `${ft(g.distToHole())} (${yd(g.distToHole())})` : yd(g.distToHole())}</b></div>
     <div>Round: <b>${total === 0 ? 'E' : (total > 0 ? '+' : '') + total}</b> (${g.card.length} holes)</div>
