@@ -249,9 +249,11 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
   Reeds/cattails (`reedClump`, `reedMaterial` with a wind-sway vertex shader) line shores where
   the surface is rough/oob/water.
 - Birds (`birds.js`, render-only, seeded): ~2.5x oversized on purpose (real-size birds were
-  invisible). 7-9 flocks spread along the hole 22-75 m up, plus one "follow" flock that drifts
-  ~85 m ahead of the camera; ~100 songbirds on the fairway-edge trees that, when behind/far from
-  the camera, hop to trees in front of it. Wing flapping is done in the vertex shader.
+  invisible). 4-5 flocks spread along the hole 22-75 m up, plus one "follow" flock that drifts
+  ~85 m ahead of the camera; ~50 songbirds on the fairway-edge trees that, when behind/far from
+  the camera, hop to trees in front of it. Wing flapping is done in the vertex shader. Ducks
+  (mallards, instanced) paddle on ponds and rivers, turning away from the shore (look-ahead test
+  with `pondDist` / `riverAt`).
 - Putting grid is **off by default** (G toggles; `?grid=1`).
 - Trees (trees.js): unit-space geometry scaled per instance to the exact collision volumes.
   Pines = 7 whorls × 2 offset star-shaped drooping cones + needle texture; deciduous = cluster of

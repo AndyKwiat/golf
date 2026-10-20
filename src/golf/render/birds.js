@@ -4,6 +4,7 @@
 // shader (onBeforeCompile) from a per-vertex wing coordinate + per-instance flap params.
 import * as THREE from 'three';
 import { mulberry32 } from '../../sim/rng.js';
+import { pondDist } from '../sim/hole.js';
 
 const TAU = Math.PI * 2;
 const G = 9.81;
@@ -11,6 +12,7 @@ const G = 9.81;
 // oversized, fly lower, and are spread along the whole hole so some are always near the player.
 const MAX_SKY = 9 * 10;
 const MAX_SMALL = 120;
+const MAX_DUCKS = 48;
 
 // Unit bird (wingspan 1, forward +z, up +y, wings along x). aWing = signed span fraction
 // (0 on the body) so the shader knows what to rotate. `body` scales the fuselage (songbirds are
@@ -34,6 +36,33 @@ function birdGeometry(body = 1, sweep = 1, fat = 1) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('aWing', new THREE.Float32BufferAttribute(wing.map(w => (Math.abs(w) < 0.07 ? 0 : w)), 1));
+  return g;
+}
+
+/** Duck at 2x scale (~1 m long), facing +z, waterline at y = 0. Vertex colors: mallard drake
+ * (tinted brown per instance for hens via the instance color multiply). */
+function duckGeometry() {
+  const parts = [];
+  const add = (g, color, map = null) => {
+    g = g.toNonIndexed(); g.computeVertexNormals();
+    const p = g.attributes.position, c = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) { const k = map ? map(p.getX(i), p.getY(i), p.getZ(i)) : color; c.set(k, i * 3); }
+    g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+    parts.push(g);
+  };
+  // body: squashed sphere, grey back, brown chest, white neck ring
+  add(new THREE.IcosahedronGeometry(1, 2).scale(0.24, 0.17, 0.42).translate(0, 0.07, 0), null,
+    (x, y, z) => (z > 0.22 ? [0.45, 0.27, 0.16] : y > 0.12 ? [0.55, 0.55, 0.52] : [0.75, 0.74, 0.7]));
+  add(new THREE.ConeGeometry(0.12, 0.3, 6).rotateX(-Math.PI / 2).translate(0, 0.14, -0.45), [0.2, 0.2, 0.22]);   // tail
+  add(new THREE.IcosahedronGeometry(0.13, 1).translate(0, 0.36, 0.34), [0.08, 0.4, 0.18]);                         // green head
+  add(new THREE.CylinderGeometry(0.06, 0.08, 0.2, 6).translate(0, 0.24, 0.32), null, (x, y) => (y < 0.2 ? [0.95, 0.95, 0.95] : [0.08, 0.4, 0.18]));
+  add(new THREE.BoxGeometry(0.07, 0.035, 0.14).translate(0, 0.33, 0.49), [0.95, 0.75, 0.15]);                     // bill
+  const pos = [], col = [];
+  for (const g of parts) { pos.push(...g.attributes.position.array); col.push(...g.attributes.color.array); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
   return g;
 }
 
@@ -111,6 +140,11 @@ export class Birds {
     this.skyMesh = mk(birdGeometry(1, 1.2), MAX_SKY);
     this.smallMesh = mk(birdGeometry(1.4, 0.6, 1.9), MAX_SMALL);
     this.flocks = []; this.sky = []; this.small = [];
+    // ducks: paddle around ponds and drift along rivers (2x real size like the other birds)
+    this.duckMesh = new THREE.InstancedMesh(duckGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, flatShading: true }), MAX_DUCKS);
+    this.duckMesh.count = 0; this.duckMesh.frustumCulled = false;
+    scene.add(this.duckMesh);
+    this.ducks = [];
     this.t = 0;
   }
 
@@ -124,7 +158,7 @@ export class Birds {
     // ---- sky flocks: big lazy loops (ellipse + a harmonic) at 40–150 m over/around the hole
     const groundY = hole.height(center.x, center.z);
     this.flocks = []; this.sky = [];
-    const nF = 7 + Math.floor(rand() * 3);
+    const nF = 4 + Math.floor(rand() * 2);   // (incl. the camera-following flock)
     for (let f = 0; f < nF; f++) {
       const R = U(45, 170);
       const fz = -30 + (hole.L + 60) * ((f + U(0.2, 0.8)) / nF);       // evenly along the hole
@@ -179,7 +213,7 @@ export class Birds {
     });
     const tints = [0x8a5a2c, 0x3f6fd0, 0x2f8be0, 0xd8402a, 0xe8b22a, 0xf0f0f0, 0x6a3fa8];   // bright, readable against foliage
     this.small = [];
-    const nS = P.length ? Math.min(MAX_SMALL, 90 + Math.floor(rand() * 25)) : 0;
+    const nS = P.length ? Math.min(MAX_SMALL, 45 + Math.floor(rand() * 13)) : 0;
     for (let i = 0; i < nS; i++) {
       const tree = Math.floor(rand() * P.length);
       const b = {
@@ -193,6 +227,7 @@ export class Birds {
       this.small.push(b);
     }
     this.smallMesh.count = this.small.length;
+    this.buildDucks(hole, rand);
     for (const im of [this.skyMesh, this.smallMesh]) if (im.instanceColor) im.instanceColor.needsUpdate = true;
     this.update(0);
   }
@@ -234,6 +269,7 @@ export class Birds {
 
   update(dt, camera) {
     if (!this.hole) return;
+    this.updateDucks(dt);
     if (camera) {
       this.cam = camera.position;
       { const e0 = camera.matrixWorld.elements, l = Math.hypot(e0[8], e0[10]) || 1; this.camFwd = { x: -e0[8] / l, z: -e0[10] / l }; }
@@ -277,6 +313,72 @@ export class Birds {
     });
     sf.needsUpdate = true;
     this.smallMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  buildDucks(hole, rand) {
+    const U = (a, b) => a + (b - a) * rand();
+    this.ducks = [];
+    const water = [];
+    for (const p of hole.ponds) water.push({ kind: 'pond', p });
+    for (const r of hole.rivers) water.push({ kind: 'river', r });
+    for (const w of water) {
+      if (this.ducks.length >= MAX_DUCKS - 6 || rand() < 0.2) continue;
+      const n = 3 + Math.floor(rand() * 4);
+      let cx, cz, level;
+      if (w.kind === 'pond') {
+        const p = w.p;
+        let ok = false;
+        for (let k = 0; k < 40 && !ok; k++) { cx = p.x + U(-1, 1) * p._bound * 0.7; cz = p.z + U(-1, 1) * p._bound * 0.7; ok = pondDist(p, cx, cz) < -3; }
+        if (!ok) continue;
+        level = p.level;
+      } else {
+        const i = 4 + Math.floor(rand() * (w.r.pts.length - 8));
+        [cx, cz] = w.r.pts[i]; level = w.r.levels[i];
+      }
+      const drake = rand();
+      for (let j = 0; j < n; j++) {
+        this.ducks.push({
+          w, x: cx + U(-2, 2), z: cz + U(-2, 2), level, yaw: U(0, Math.PI * 2), speed: U(0.25, 0.5),
+          turn: 0, turnT: U(1, 4), bob: U(0, 6.28), s: U(0.85, 1.1),
+          drake: (j + drake * 3) % 2 < 1, ri: w.kind === 'river' ? null : null,
+        });
+      }
+    }
+    // colors: drakes = green head / grey body, hens = brown
+    const col = new THREE.Color();
+    this.ducks.forEach((d, i) => { col.setRGB(1, 1, 1); this.duckMesh.setColorAt(i, d.drake ? col.setRGB(1, 1, 1) : col.setRGB(0.62, 0.48, 0.32)); });
+    this.duckMesh.count = this.ducks.length;
+    if (this.duckMesh.instanceColor) this.duckMesh.instanceColor.needsUpdate = true;
+  }
+
+  /** Wander inside the water: steer away when the next position gets near the shore. */
+  updateDucks(dt) {
+    const hole = this.hole, M = new THREE.Matrix4(), Q = new THREE.Quaternion(), S = new THREE.Vector3(), P = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+    const inWater = (d, x, z) => {
+      if (d.w.kind === 'pond') return pondDist(d.w.p, x, z) < -1.2;
+      const rv = hole.riverAt(x, z); if (!rv) return false;
+      d.level = rv.level; return rv.d < rv.half - 1;
+    };
+    let left = dt;
+    while (left > 1e-9) {
+      const h = Math.min(left, 1 / 20); left -= h;
+      for (const d of this.ducks) {
+        d.turnT -= h;
+        if (d.turnT <= 0) { d.turn = (this.rand() - 0.5) * 0.8; d.turnT = 1 + this.rand() * 4; }
+        d.yaw += d.turn * h;
+        const nx = d.x + Math.sin(d.yaw) * d.speed * h * 6, nz = d.z + Math.cos(d.yaw) * d.speed * h * 6;   // look ahead
+        if (!inWater(d, nx, nz)) { d.yaw += 2.2 * h * (d.turn >= 0 ? 1 : -1) + 0.6 * h; continue; }   // turn away from the bank
+        d.x += Math.sin(d.yaw) * d.speed * h; d.z += Math.cos(d.yaw) * d.speed * h;
+      }
+    }
+    this.ducks.forEach((d, i) => {
+      Q.setFromAxisAngle(up, d.yaw);
+      P.set(d.x, d.level + 0.02 + Math.sin(this.t * 2.1 + d.bob) * 0.025, d.z);
+      S.setScalar(d.s);
+      this.duckMesh.setMatrixAt(i, M.compose(P, Q, S));
+    });
+    this.duckMesh.instanceMatrix.needsUpdate = true;
+    if (this.ducks.length) this.duckMesh.computeBoundingSphere();
   }
 
   stepGlide(h) {
