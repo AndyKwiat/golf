@@ -247,3 +247,40 @@ test('hole variety: every theme appears, with cliffs, island greens, tree island
   assert.ok(cliffs >= 10 && islandGreens >= 2 && treeIslands >= 10, `cliffs ${cliffs} islandGreens ${islandGreens} treeIslands ${treeIslands}`);
   assert.ok(bunkers / 60 >= 5 && ponds / 60 >= 1.1, `bunkers ${bunkers / 60} ponds ${ponds / 60}`);
 });
+
+import { scoreMouseSwing, MOUSE } from '../src/golf/sim/mouseswing.js';
+const line = (H, frac, slant = 0, wobble = 0) => Array.from({ length: 41 }, (_, i) => [500 + slant * frac * MOUSE.targetFrac * H * i / 40 + wobble * Math.sin(i * 1.7), 100 + frac * MOUSE.targetFrac * H * i / 40]);
+
+test('mouse swing scoring: length -> power (cap 120%), straightness -> angle error', () => {
+  const H = 800;
+  const perfect = scoreMouseSwing(line(H, 1), H);
+  assert.ok(Math.abs(perfect.powerMul - 1) < 1e-9 && perfect.aimErr === 0 && perfect.accuracy === 1);
+  assert.ok(Math.abs(scoreMouseSwing(line(H, 0.5), H).powerMul - 0.5) < 1e-9);
+  const long = scoreMouseSwing(line(H, 1.5), H);
+  assert.equal(long.powerMul, MOUSE.maxPower);
+  assert.equal(long.aimErr, 0, 'a perfectly straight long line gets 120% with no penalty');
+  const right = scoreMouseSwing(line(H, 1, 0.05), H), left = scoreMouseSwing(line(H, 1, -0.05), H);
+  assert.ok(right.aimErr > 0 && left.aimErr < 0 && Math.abs(right.aimErr + left.aimErr) < 1e-12, 'drift right -> shot right');
+  const wob = scoreMouseSwing(line(H, 1, 0, 6), H);
+  assert.ok(wob.aimErr !== 0 && wob.accuracy < 1, 'jitter costs accuracy');
+  const rightLong = scoreMouseSwing(line(H, 1.3, 0.05), H);
+  assert.ok(Math.abs(rightLong.aimErr) > Math.abs(right.aimErr), 'overshoot amplifies the error');
+  assert.equal(scoreMouseSwing(line(H, 1, 0.08), H, { putter: true }).aimErr, 0, 'putts: power only');
+  assert.equal(scoreMouseSwing(line(H, 0.02), H), null, 'tiny strokes cancel');
+});
+
+test('mouseSwing action launches with scaled power + angle error, and replays', () => {
+  const g = new GolfGame({ seed: 8, mode: 'mouse' });
+  const aim0 = g.aim, p0 = g.power;
+  g.dispatch({ type: 'mouseSwing', pts: line(800, 1.1, 0.03), screenH: 800 }).step();
+  assert.equal(g.phase, 'moving');
+  const r = scoreMouseSwing(line(800, 1.1, 0.03), 800);
+  assert.ok(Math.abs(g.lastShot.power - p0 * r.powerMul) < 1e-12 && Math.abs(g.lastShot.aim - (aim0 + r.aimErr)) < 1e-12);
+  g.runUntilSettled();
+  const rep = GolfGame.replay(g.initial, g.log, g.tick);
+  assert.deepEqual(rep.snapshot(), g.snapshot());
+  // ignored outside mouse mode
+  const c = new GolfGame({ seed: 8, mode: 'cheat' });
+  c.dispatch({ type: 'mouseSwing', pts: line(800, 1), screenH: 800 }).step();
+  assert.equal(c.phase, 'aim');
+});

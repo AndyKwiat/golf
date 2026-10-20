@@ -826,7 +826,8 @@ export class GolfView {
     this.halo.visible = game.phase !== 'holed' && game.phase !== 'moving';
 
     const aiming = game.phase === 'aim' || game.phase === 'swing';
-    if (!(aiming && game.mode === 'cheat')) { this.previewLine.visible = false; this.landMarker.visible = false; this.endMarker.visible = false; }
+    // cheat + mouse modes show the perfect-shot preview
+    if (!(aiming && game.mode !== 'normal')) { this.previewLine.visible = false; this.landMarker.visible = false; this.endMarker.visible = false; }
     // normal-mode aim guide: ground line + full-power target ring
     if (aiming && game.mode === 'normal') {
       const club = game.club, len = club.putter ? 3 : Math.min(club.carry, 260);
@@ -841,7 +842,9 @@ export class GolfView {
     } else { this.aimLine.visible = false; this.targetMarker.visible = false; }
 
     // tracer (current/last flight)
-    if (game.tracer.length > 1 && game.phase !== 'aim' || (game.phase === 'aim' && game.lastShot && game.tracer.length > 1 && game.mode === 'normal')) {
+    // ball trail: not for putts
+    const putting = game.lastShot?.club === 'Pt' || (game.phase !== 'moving' && game.club.putter);
+    if (!putting && (game.tracer.length > 1 && game.phase !== 'aim' || (game.phase === 'aim' && game.lastShot && game.tracer.length > 1 && game.mode === 'normal'))) {
       const tr = game.tracer, pts = [];
       const step = Math.max(1, Math.floor(tr.length / 500));
       for (let i = 0; i < tr.length; i += step) pts.push({ x: tr[i].x, y: tr[i].y + 0.06, z: tr[i].z });

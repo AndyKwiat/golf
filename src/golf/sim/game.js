@@ -7,13 +7,14 @@ import { CLUBS, PUTTER, DRIVER, nominalTotal } from './clubs.js';
 import { Hole, generateHole } from './hole.js';
 import { stepShot, simulateShot, newShotCtx } from './ball.js';
 import { len2, sin, cos, atan2 } from '../../sim/math.js';
+import { scoreMouseSwing, MOUSE } from './mouseswing.js';
 
 /**
  * Build the launched ball for a club/aim/power from a resting position and lie.
  * curve in [-1, 1]: -1 = full draw (curves left), +1 = full fade (curves right). Ignored for putts.
  */
 export function launchBall(hole, pos, club, aim, power, lie, curve = 0) {
-  const p = Math.min(1, Math.max(0, power));
+  const p = Math.min(MOUSE.maxPower, Math.max(0, power));   // > 1 only via a long, straight mouse swing
   const y = hole.height(pos.x, pos.z);
   if (club.putter) {
     const mu = SURF[lie === 'green' ? 'green' : 'green'].roll;
@@ -218,6 +219,15 @@ export class GolfGame {
         }
         break;
       case 'swingPress': this._swingPress(); break;
+      case 'mouseSwing': {   // {pts: [[x,y]...] screen px, screenH}: see mouseswing.js
+        if (this.phase !== 'aim' || this.mode !== 'mouse') break;
+        const r = scoreMouseSwing(a.pts, a.screenH, { putter: this.club.putter });
+        if (!r) { this.events.push({ type: 'swingCancel' }); break; }
+        this._launch(this.aim + r.aimErr, this.power * r.powerMul, r.aimErr);
+        this.lastShot.mouse = { powerMul: r.powerMul, accuracy: r.accuracy, aimErr: r.aimErr };
+        this.events.push({ type: 'mouseSwing', ...this.lastShot.mouse });
+        break;
+      }
       case 'placeBall':   // debug/agent helper: drop the ball anywhere (logged, so replays still work)
         if (this.phase === 'aim' || this.phase === 'holed') {
           this._placeBall({ x: a.x, z: a.z }); this.phase = 'aim'; this._newLie();

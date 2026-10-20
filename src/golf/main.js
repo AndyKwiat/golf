@@ -3,12 +3,14 @@ import { GolfGame } from './sim/game.js';
 import { CLUBS, PUTTER, flatCarry } from './sim/clubs.js';
 import { DT, SWING, LIE, PUTT_MAX_FLAT } from './sim/constants.js';
 import { botShot, botPlayHole } from './sim/bot.js';
+import { scoreMouseSwing, MOUSE } from './sim/mouseswing.js';
 import { randomSeed } from '../sim/rng.js';
 import { GolfView } from './render/view.js';
 
 const params = new URLSearchParams(location.search);
 const seed = params.has('seed') ? Number(params.get('seed')) : randomSeed();
-const game = new GolfGame({ seed, mode: params.get('mode') === 'normal' ? 'normal' : 'cheat' });
+const MODES = ['mouse', 'cheat', 'normal'];   // mouse swing is the default
+const game = new GolfGame({ seed, mode: MODES.includes(params.get('mode')) ? params.get('mode') : 'mouse' });
 const view = new GolfView(document.getElementById('c'), game, { lite: params.get('lite') === '1' });
 if (params.get('cam') === 'overhead') view.camMode = 'overhead';
 if (params.get('grid') === '1') view.setGrid(true);   // grid is off by default
@@ -19,12 +21,13 @@ if (params.get('hud') === '0') $('hud').classList.add('hidden');
 // ------------------------------------------------------------------ input
 const keys = new Set();
 function newHole(s = randomSeed()) { game.dispatch({ type: 'newHole', seed: s }); }
-function toggleMode() { game.dispatch({ type: 'setMode', mode: game.mode === 'normal' ? 'cheat' : 'normal' }); }
+function toggleMode() { game.dispatch({ type: 'setMode', mode: MODES[(MODES.indexOf(game.mode) + 1) % MODES.length] }); }
 function cycleCam() { view.camMode = view.camMode === 'auto' ? 'overhead' : 'auto'; view.zoom = 1; }
 /** Change draw/fade; the caddie re-aims so the shaped shot still finishes on the target line. */
 function setCurve(c) { if (!game.club.putter) game.dispatch({ type: 'setCurve', curve: Math.round(Math.max(-1, Math.min(1, c)) * 20) / 20, reaim: true }); }
 function primary() {
   if (game.phase === 'holed') return newHole();
+  if (game.mode === 'mouse') return;   // swing by drawing with the mouse
   if (game.mode === 'cheat') game.dispatch({ type: 'shoot' });
   else game.dispatch({ type: 'swingPress' });
 }
@@ -60,7 +63,7 @@ function sampleHeldInput() {
   if (keys.has('arrowdown') || keys.has('s')) dp -= 1;
   const rate = putt ? (fine ? 0.06 : 0.5) : (fine ? 0.02 : 0.25);
   if (da && game.phase === 'aim') game.dispatch({ type: 'setAim', aim: game.aim + da * rate * DT });
-  if (dp && game.mode === 'cheat') game.dispatch({ type: 'setPower', power: game.power + dp * (fine ? 0.03 : 0.25) * DT });
+  if (dp && game.mode !== 'normal') game.dispatch({ type: 'setPower', power: game.power + dp * (fine ? 0.03 : 0.25) * DT });
 }
 
 const canvas = $('c');
@@ -70,9 +73,13 @@ function aimAtPointer(e) {
   const r = canvas.getBoundingClientRect();
   aimAt(view.pick(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1));
 }
-canvas.addEventListener('pointerdown', e => { if (e.button === 0) { aimDrag = true; aimAtPointer(e); } });
-addEventListener('pointermove', e => { if (aimDrag) aimAtPointer(e); if (meterDrag) meterSet(e); if (mapDrag) mapAim(e); });
-addEventListener('pointerup', () => { aimDrag = meterDrag = mapDrag = false; });
+canvas.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  if (game.mode === 'mouse') { if (game.phase === 'aim') startStroke(e); return; }   // mouse mode: clicks swing, never aim
+  aimDrag = true; aimAtPointer(e);
+});
+addEventListener('pointermove', e => { if (stroke) moveStroke(e); if (aimDrag) aimAtPointer(e); if (meterDrag) meterSet(e); if (mapDrag) mapAim(e); });
+addEventListener('pointerup', e => { if (stroke) endStroke(e); aimDrag = meterDrag = mapDrag = false; });
 canvas.addEventListener('wheel', e => { view.zoom = Math.min(4, Math.max(0.3, view.zoom * Math.exp(e.deltaY * 0.001))); e.preventDefault(); }, { passive: false });
 
 const meter = $('meter');
@@ -86,6 +93,50 @@ meter.addEventListener('pointerdown', e => { if (game.mode === 'cheat') { meterD
 
 $('btn-new').onclick = () => newHole();
 $('btn-mode').onclick = () => toggleMode();
+
+// ------------------------------------------------------------------ mouse swing (draw a line down)
+const sw = $('swing'), swx = sw.getContext('2d');
+let stroke = null, strokeFade = 0;
+function swingPos(e) { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+function startStroke(e) { stroke = { pts: [swingPos(e)], H: canvas.getBoundingClientRect().height }; strokeFade = 0; try { canvas.setPointerCapture(e.pointerId); } catch {} }
+function moveStroke(e) { const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e]; for (const ev of (evs.length ? evs : [e])) stroke.pts.push(swingPos(ev)); }
+function endStroke(e) {
+  moveStroke(e);
+  const pts = stroke.pts.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10]);
+  game.dispatch({ type: 'mouseSwing', pts, screenH: stroke.H });
+  strokeFade = 1; lastStroke = stroke; stroke = null;
+}
+let lastStroke = null;
+function drawSwingOverlay(dt) {
+  const W = sw.clientWidth, H = sw.clientHeight;
+  if (sw.width !== W || sw.height !== H) { sw.width = W; sw.height = H; }
+  swx.clearRect(0, 0, W, H);
+  const st = stroke || (strokeFade > 0 ? lastStroke : null);
+  if (!st) return;
+  if (!stroke) strokeFade = Math.max(0, strokeFade - dt * 1.2);
+  swx.globalAlpha = stroke ? 1 : strokeFade;
+  const [x0, y0] = st.pts[0], T = MOUSE.targetFrac * st.H, cur = st.pts[st.pts.length - 1];
+  const r = scoreMouseSwing(st.pts, st.H, { putter: game.club.putter });
+  // guide: vertical dashed line, 100% target line, 120% line
+  swx.setLineDash([6, 8]); swx.strokeStyle = 'rgba(255,255,255,0.45)'; swx.lineWidth = 2;
+  swx.beginPath(); swx.moveTo(x0, y0); swx.lineTo(x0, y0 + T * MOUSE.maxPower + 20); swx.stroke();
+  swx.setLineDash([]);
+  const hline = (y, color, w, label) => { swx.strokeStyle = color; swx.lineWidth = w; swx.beginPath(); swx.moveTo(x0 - 120, y); swx.lineTo(x0 + 120, y); swx.stroke(); swx.fillStyle = color; swx.font = 'bold 13px system-ui'; swx.fillText(label, x0 + 128, y + 4); };
+  hline(y0 + T, '#ffe14d', 4, '100%');
+  hline(y0 + T * MOUSE.maxPower, 'rgba(255,140,60,0.8)', 2, '120%');
+  if (y0 + T > H) { swx.fillStyle = '#fff'; swx.font = 'bold 15px system-ui'; swx.fillText('start higher up the screen!', x0 + 20, H - 20); }
+  // the stroke, colored by accuracy
+  const acc = r ? r.accuracy : 1, col = `hsl(${Math.round(acc * 120)}, 90%, 55%)`;
+  swx.strokeStyle = col; swx.lineWidth = 5; swx.lineCap = 'round'; swx.lineJoin = 'round';
+  swx.beginPath(); st.pts.forEach(([x, y], i) => (i ? swx.lineTo(x, y) : swx.moveTo(x, y))); swx.stroke();
+  swx.fillStyle = '#fff'; swx.beginPath(); swx.arc(x0, y0, 6, 0, 7); swx.fill();
+  if (r) {
+    swx.fillStyle = '#fff'; swx.font = 'bold 16px system-ui';
+    const txt = `Power ${(r.powerMul * 100).toFixed(0)}%` + (game.club.putter ? '' : ` · Accuracy ${(r.accuracy * 100).toFixed(0)}%`);
+    swx.fillText(txt, cur[0] + 16, cur[1] + 6);
+  }
+  swx.globalAlpha = 1;
+}
 $('btn-cam').onclick = () => cycleCam();
 $('btn-grid').onclick = () => view.setGrid(!view.showGrid);
 $('btn-shoot').onclick = () => game.dispatch({ type: 'shoot' });
@@ -130,7 +181,7 @@ function drawMinimap(preview) {
     pts.forEach((p, i) => { const [sx, sy] = mmT.toS(p.x, p.z); i ? mmx.lineTo(sx, sy) : mmx.moveTo(sx, sy); });
     mmx.stroke();
   };
-  if (game.tracer.length > 1) pathOf(game.tracer, 'rgba(255,255,255,0.7)', 1.5);
+  if (game.tracer.length > 1 && game.lastShot?.club !== 'Pt') pathOf(game.tracer, 'rgba(255,255,255,0.7)', 1.5);
   if (preview && game.phase === 'aim') pathOf(preview.path, preview.result === 'water' || preview.result === 'oob' ? '#ff5a4d' : '#ffe14d', 2);
   if (game.phase === 'aim' && game.mode === 'normal' && !game.club.putter) {
     const L = game.club.carry, b = game.ball;
@@ -169,6 +220,7 @@ function toast(html, secs = 2.2) {
   const t = $('toast'); t.innerHTML = html; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), secs * 1000);
 }
+const MODE_NAMES = { mouse: 'Mouse swing', cheat: 'CHEAT (preview)', normal: 'Meter' };
 const THEME_NAMES = { parkland: 'Parkland', lakes: 'Lakeside', canyon: 'Canyon', links: 'Links', forest: 'Deep Forest' };
 const SCORE = { '-4': 'Condor!!', '-3': 'Albatross!', '-2': 'Eagle!', '-1': 'Birdie!', 0: 'Par', 1: 'Bogey', 2: 'Double bogey', 3: 'Triple bogey' };
 function handleEvents() {
@@ -186,7 +238,11 @@ function handleEvents() {
       const left = e.lie === 'green' ? ft(e.dist) : yd(e.dist);
       toast(`${parts.join(' ')}${parts.length ? '\n' : ''}<small>${carry}${yd(e.total)} · ${e.lie} · ${left} to go</small>`, 2.2);
     } else if (e.type === 'newHole') { $('toast').classList.remove('show'); view.snap = true; }
-    else if (e.type === 'swingCancel') toast('<small>swing cancelled</small>', 1);
+    else if (e.type === 'swingCancel') toast('<small>swing cancelled — draw a line DOWN the screen</small>', 1.4);
+    else if (e.type === 'mouseSwing') {
+      const deg = e.aimErr * 180 / Math.PI;
+      toast(`<small>power ${(e.powerMul * 100).toFixed(0)}%${game.lastShot.club === 'Pt' ? '' : ` · accuracy ${(e.accuracy * 100).toFixed(0)}%${Math.abs(deg) >= 0.05 ? ` · ${Math.abs(deg).toFixed(1)}° ${deg > 0 ? 'right' : 'left'}` : ' · dead straight!'}`}</small>`, 1.6);
+    }
   }
 }
 
@@ -210,7 +266,8 @@ function updateHud(preview) {
     <div>Stroke: <b>${g.strokes + (g.phase === 'holed' || g.phase === 'moving' ? 0 : 1)}</b> · Lie: <b>${g.phase === 'moving' ? (g.ball.air ? 'in flight' : 'rolling') : g.lie}</b></div>
     <div>To pin: <b>${g.lie === 'green' && g.phase !== 'moving' ? `${ft(g.distToHole())} (${yd(g.distToHole())})` : yd(g.distToHole())}</b></div>
     <div>Round: <b>${total === 0 ? 'E' : (total > 0 ? '+' : '') + total}</b> (${g.card.length} holes)</div>
-    <div>Mode: <span class="${g.mode === 'cheat' ? 'mode-cheat' : ''}">${g.mode === 'cheat' ? 'CHEAT (preview)' : 'Normal'}</span> · seed ${g.seed}</div>`;
+    <div>Mode: <span class="${g.mode === 'cheat' ? 'mode-cheat' : ''}">${MODE_NAMES[g.mode]}</span> · seed ${g.seed}</div>`;
+  $('btn-mode').innerHTML = `${MODE_NAMES[g.mode]} <kbd>M</kbd>`;
   $('btn-mode').classList.toggle('on', g.mode === 'cheat');
   $('btn-grid').classList.toggle('on', view.showGrid);
   $('btn-cam').classList.toggle('on', view.camMode === 'overhead');
@@ -243,7 +300,20 @@ function updateHud(preview) {
   $('cheat-row').style.display = cheat && g.phase === 'aim' ? 'block' : 'none';
   const marker = $('meter-marker'), pw = $('meter-power'), fill = $('meter-fill');
   fill.style.left = vToPct(0) + '%';
-  if (cheat) {
+  const previewText = () => {
+    if (!preview || g.phase !== 'aim') return '';
+    const carry = preview.landing ? Math.hypot(preview.landing.x - g.ball.x, preview.landing.z - g.ball.z) : 0;
+    const tot = Math.hypot(preview.end.x - g.ball.x, preview.end.z - g.ball.z);
+    const endLie = preview.result === 'holed' ? 'IN THE HOLE' : preview.result === 'water' ? 'WATER' : preview.result === 'oob' ? 'OUT OF BOUNDS' : h.surface(preview.end.x, preview.end.z);
+    return ` — ${carry > 1 ? `carry ${yd(carry)}, ` : ''}total ${g.club.putter ? ft(tot) : yd(tot)} → ${endLie}${preview.treeHits ? ' (hits tree)' : ''}`;
+  };
+  if (g.mode === 'mouse') {
+    marker.style.display = 'none'; pw.style.display = 'none';
+    fill.style.width = (vToPct(g.power) - vToPct(0)) + '%';
+    const shape = g.club.putter || !g.curve ? '' : ` · ${g.curve < 0 ? 'draw' : 'fade'} ${Math.abs(g.curve * 100).toFixed(0)}%`;
+    $('meter-label').textContent = `${g.club.name} · Power ${(g.power * 100).toFixed(1)}%${shape}${previewText()} (perfect stroke)`;
+    $('help').textContent = '←/→: aim (Shift fine) · ↑/↓: power · Q/E: club · Z/X: draw/fade · swing: draw a straight line down (longer = up to 120%)';
+  } else if (cheat) {
     marker.style.display = 'none'; pw.style.display = 'none';
     fill.style.width = (vToPct(g.power) - vToPct(0)) + '%';
     const shape = g.club.putter || !g.curve ? '' : ` · ${g.curve < 0 ? 'draw' : 'fade'} ${Math.abs(g.curve * 100).toFixed(0)}%`;
@@ -275,7 +345,7 @@ function updateHud(preview) {
 // ------------------------------------------------------------------ preview (memoized)
 let previewKey = '', preview = null;
 function updatePreview() {
-  if (game.mode !== 'cheat' || game.phase !== 'aim') { previewKey = ''; preview = null; view.setPreview(null); return; }
+  if (game.mode === 'normal' || game.phase !== 'aim') { previewKey = ''; preview = null; view.setPreview(null); return; }
   const key = `${game.seed}|${game.ball.x}|${game.ball.z}|${game.aim}|${game.power}|${game.clubId}|${game.curve}`;
   if (key === previewKey) return;
   previewKey = key;
@@ -287,7 +357,7 @@ function updatePreview() {
 function resize() { view.resize(innerWidth, innerHeight); }
 addEventListener('resize', resize); resize();
 function simTick() { sampleHeldInput(); game.step(); handleEvents(); }
-function draw(alpha, dtReal, snap) { updatePreview(); updateHud(preview); view.render(alpha, dtReal, snap); drawMinimap(preview); }
+function draw(alpha, dtReal, snap) { updatePreview(); updateHud(preview); view.render(alpha, dtReal, snap); drawMinimap(preview); drawSwingOverlay(dtReal); }
 
 let acc = 0, last = performance.now();
 function frame(now) {
@@ -325,6 +395,16 @@ window.__golf = {
   playHole() { botPlayHole(game); handleEvents(); draw(1, DT, true); return game.snapshot(); },
   preview(aim, power, club, curve) { const r = game.preview(aim, power, club, curve); return { result: r.result, end: r.end, landing: r.landing, ticks: r.ticks, treeHits: r.treeHits }; },
   state() { return game.snapshot(); },
+  /**
+   * Mouse-mode swing from code: a straight-ish stroke from (x0, y0) of `frac` x the target length
+   * (1 = 100% power line), with sideways drift `slant` (px per px down) and `wobble` (px amplitude).
+   */
+  mouseSwing({ frac = 1, slant = 0, wobble = 0, x0 = 600, y0 = 150 } = {}) {
+    const H = canvas.getBoundingClientRect().height, L = frac * MOUSE.targetFrac * H, pts = [];
+    for (let i = 0; i <= 40; i++) { const t = i / 40; pts.push([x0 + slant * L * t + wobble * Math.sin(i * 1.7), y0 + L * t]); }
+    lastStroke = { pts, H }; strokeFade = 1;
+    game.dispatch({ type: 'mouseSwing', pts, screenH: H }); return this.settle();
+  },
   /** Drop the ball at (x, z), optionally aiming at (lookX, lookZ). Great for screenshots of a spot. */
   placeBall(x, z, lookX, lookZ) { game.dispatch({ type: 'placeBall', x, z, lookX, lookZ }); return this.step(1); },
   /** Place the ball `dist` m short of bunker i (or pond i with kind='pond'), looking at it. */

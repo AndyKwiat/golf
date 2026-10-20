@@ -5,7 +5,9 @@ Two three.js games sharing one deterministic-sim architecture:
 - **Full golf** (`index.html`, `src/golf/`): one random par 3/4/5 hole at a time — doglegs,
   fairway, rough, bunkers, ponds (95% of holes, often two), rivers (~50%), 5 tree species (balls
   bounce off them) inside a deep surrounding forest, birds, strong per-hole wind, draw/fade shot
-  shaping, 14 clubs, auto-putter on the green. **Cheat mode is
+  shaping, 14 clubs, auto-putter on the green. Three swing modes (M cycles): **mouse swing
+  (default on the page)**, cheat (exact preview), meter (3-press). The sim's `GolfGame`
+  constructor still defaults to `cheat` (tests/agents). **Cheat mode is
   the default** (set power exactly, see the exact flight + roll before you shoot); normal mode is
   the Mario-Golf 3-press meter.
 - **Putting only** (`putting.html`, `src/sim/` + `src/main.js`): the original putting-green game.
@@ -156,6 +158,15 @@ aim/power) · `cycleClub {dir}` · `setCurve {curve ∈ [-1,1], reaim?}` (resets
 lie) · `setMode {mode}` · `newHole {seed}` · `shoot {aim?, power?, club?, curve?}`
 · `swingPress` (normal mode meter, same as putting). Phases: `aim → swing → moving → aim … → holed`.
 Cheat preview = `game.preview()` = `simulateShot(launchFor(...))` with the same `stepShot` — exact.
+
+**Mouse swing** (`mode: 'mouse'`, scoring in `src/golf/sim/mouseswing.js`, pure + tested): the
+player draws a line DOWN the screen. Power = selected power × (length / target), target = 30% of
+screen height, capped at 120%. Accuracy = |slant| + wobble of the stroke (relative to its length)
+→ an aim ANGLE error pushed to the side the stroke drifted (`MOUSE.errK`); overshooting the
+target multiplies the error (`overshootK`), so a perfectly straight long stroke gets 120% free.
+The perfect-stroke result is previewed exactly like cheat mode (arc + markers). Putts: power only. The UI dispatches `{type: 'mouseSwing', pts: [[x,y]...], screenH}` (logged, so
+replays are exact); in mouse mode clicks never aim (arrows only). Agents: `__golf.mouseSwing({frac,
+slant, wobble})`. Ball trail (3D + minimap) is hidden for putts.
 
 ## Browser agent API (`window.__golf`, golf page)
 
