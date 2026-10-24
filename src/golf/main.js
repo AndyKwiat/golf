@@ -23,8 +23,8 @@ const keys = new Set();
 function newHole(s = randomSeed()) { game.dispatch({ type: 'newHole', seed: s }); }
 function toggleMode() { game.dispatch({ type: 'setMode', mode: MODES[(MODES.indexOf(game.mode) + 1) % MODES.length] }); }
 function cycleCam() { view.camMode = view.camMode === 'auto' ? 'overhead' : 'auto'; view.zoom = 1; }
-/** Change draw/fade; the caddie re-aims so the shaped shot still finishes on the target line. */
-function setCurve(c) { if (!game.club.putter) game.dispatch({ type: 'setCurve', curve: Math.round(Math.max(-1, Math.min(1, c)) * 20) / 20, reaim: true }); }
+/** Change draw/fade; the aim shifts by the change in curve drift so the shot keeps finishing on your line. */
+function setCurve(c) { if (!game.club.putter) game.dispatch({ type: 'setCurve', curve: Math.round(Math.max(-1, Math.min(1, c)) * 1000) / 1000, reaim: true }); }
 function primary() {
   if (game.phase === 'holed') return newHole();
   if (game.mode === 'mouse') return;   // swing by drawing with the mouse
@@ -44,8 +44,6 @@ addEventListener('keydown', e => {
     case 'g': view.setGrid(!view.showGrid); break;
     case 'h': $('hud').classList.toggle('hidden'); break;
     case 'p': paused = !paused; break;
-    case 'z': setCurve(game.curve - (e.shiftKey ? 0.05 : 0.25)); break;
-    case 'x': setCurve(game.curve + (e.shiftKey ? 0.05 : 0.25)); break;
     case 'q': case '[': game.dispatch({ type: 'cycleClub', dir: -1 }); break;
     case 'e': case ']': game.dispatch({ type: 'cycleClub', dir: 1 }); break;
   }
@@ -64,7 +62,22 @@ function sampleHeldInput() {
   const rate = putt ? (fine ? 0.06 : 0.5) : (fine ? 0.02 : 0.25);
   if (da && game.phase === 'aim') game.dispatch({ type: 'setAim', aim: game.aim + da * rate * DT });
   if (dp && game.mode !== 'normal') game.dispatch({ type: 'setPower', power: game.power + dp * (fine ? 0.03 : 0.25) * DT });
+  // Z/X: hold to sweep the shot shape continuously (Z fades right, X draws left); a short stop at straight
+  let dc = 0;
+  if (keys.has('z')) dc += 1;
+  if (keys.has('x')) dc -= 1;
+  if (dc && game.phase === 'aim' && !game.club.putter) {
+    if (curveDetent > 0) curveDetent--;
+    else {
+      const c0 = game.curve;
+      let c = Math.max(-1, Math.min(1, c0 + dc * (fine ? CURVE_RATE_FINE : CURVE_RATE) * DT));
+      if (c0 !== 0 && Math.sign(c) !== Math.sign(c0)) { c = 0; curveDetent = CURVE_DETENT; }
+      if (c !== c0) setCurve(c);
+    }
+  } else curveDetent = 0;
 }
+const CURVE_RATE = 1.2, CURVE_RATE_FINE = 0.25, CURVE_DETENT = 12;   // per second / ticks
+let curveDetent = 0;
 
 const canvas = $('c');
 let aimDrag = false, meterDrag = false;
