@@ -373,6 +373,7 @@ export class GolfView {
     this.flag.rotation.y = Math.atan2(-h.wind.z, h.wind.x);   // flag streams downwind
     this.windStrength = Math.hypot(h.wind.x, h.wind.z);
     this.flagBase = flagGeo.attributes.position.array.slice();
+    this.pin = pin;
     this.holeGroup.add(pin, this.flag);
     this.pinMarker.position.set(cup.x, hy + 3.6, cup.z);
 
@@ -860,7 +861,10 @@ export class GolfView {
     const wk = 0.4 + this.windStrength / 8;
     for (let i = 0; i < fp.count; i++) { const x0 = this.flagBase[i * 3]; fp.setZ(i, Math.sin(x0 * 6 - this.time * (3 + wk * 3)) * 0.05 * wk * x0); }
     fp.needsUpdate = true;
-    this.pinMarker.visible = this.camera.position.distanceTo(this.flag.position) > 35;
+    // flagstick is pulled while putting (aiming or rolling a putt, and after holing out)
+    const pulled = game.phase === 'holed' || (game.phase === 'moving' ? game.lastShot?.club === 'Pt' : game.club.putter);
+    this.pin.visible = this.flag.visible = !pulled;
+    this.pinMarker.visible = !pulled && this.camera.position.distanceTo(this.flag.position) > 35;
     this.updateDots();
     for (const f of this.flowing || []) { f.tex.offset.x += f.vx * dtReal; f.tex.offset.y += f.vy * dtReal; }
     if (this.reedMat) this.reedMat.userData.time.value = this.time;

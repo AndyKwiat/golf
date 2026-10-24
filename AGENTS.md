@@ -254,6 +254,8 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
   the camera, hop to trees in front of it. Wing flapping is done in the vertex shader. Ducks
   (mallards, instanced) paddle on ponds and rivers, turning away from the shore (look-ahead test
   with `pondDist` / `riverAt`).
+- The flagstick (pin, flag, floating pin marker) is hidden whenever the putter is the club (aiming,
+  rolling a putt) and after holing out.
 - Putting grid is **off by default** (G toggles; `?grid=1`).
 - Trees (trees.js): unit-space geometry scaled per instance to the exact collision volumes.
   Pines = 7 whorls × 2 offset star-shaped drooping cones + needle texture; deciduous = cluster of
