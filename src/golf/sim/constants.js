@@ -29,6 +29,8 @@ export const SURF = {
   water:   { roll: 5, e: 0, tf: 1, grip: 0 },
   oob:     { roll: 0.70, e: 0.12, tf: 0.75, grip: 0.5 },
 };
+// Landing bite: tangential speed lost per bounce = tf + BACKSPIN_BITE * spin * grip.
+export const BACKSPIN_BITE = 1.4;
 export const BOUNCE_TO_ROLL = 1.2;      // m/s: below this rebound speed the ball starts rolling
 
 // Launch modifiers by lie: speed multiplier and spin multiplier (wedges get a better sand factor)
@@ -41,7 +43,7 @@ export const PUTT_MAX_FLAT = 30;        // putter: power 1 rolls 30 m on flat gr
 
 // Shot shape: curve = +-1 gives this much sidespin (same units as backspin/lift coefficient).
 // Deliberately exaggerated (video-game banana balls): see tests/golf.test.mjs for the bend.
-export const CURVE_SIDESPIN = 0.16;
+export const CURVE_SIDESPIN = 0.256;
 
 export const FRINGE_WIDTH = 1.2;
 

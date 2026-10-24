@@ -112,7 +112,8 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   rolling (putts are wind-free). `hole.wind = {x, z}` m/s, 3–13 m/s, from the seed.
   Shaping is deliberately exaggerated (`CURVE_SIDESPIN = 0.16`): full draw/fade bends a drive
   ~123 yd, a 7i ~52 yd, a SW ~18 yd; each 25% step ≈ 32 yd on a drive (Shift+Z/X = 5% steps).
-  Ground contact: reflect with surface restitution `e`, lose tangential speed `tf + 1.5·spin`;
+  Ground contact: reflect with surface restitution `e`, lose tangential speed
+  `tf + BACKSPIN_BITE·spin·grip` (`BACKSPIN_BITE = 1.4`, capped at 95%);
   below `BOUNCE_TO_ROLL` it rolls (putting-game rolling model with per-surface `roll` friction).
 - Trees: pine = cone crown, round = ellipsoid crown, plus trunk cylinder. Entering a crown bounces
   off its surface, keeps 45% speed, deterministic deflection (hash of tree id/hit count), then
@@ -126,7 +127,7 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   frame; the sim is unchanged).
 - Surface feel (tuned on purpose, see `SURF` in constants.js): a 5 m/s roll goes ~23 m on green,
   ~5 m on fairway, ~2 m in rough. Landing: driver runs ~13 m on fairway, ~3 m in rough; greens
-  "grip" backspin (`grip`) so a 7i holds within ~11 m and wedges within ~3 m. Rough lie = 85%
+  "grip" backspin (`grip` × `BACKSPIN_BITE`) so a 7i holds within ~10 m and wedges within ~3 m. Rough lie = 85%
   launch speed and half spin (7i carries ~102 m instead of 148). `club.total` (shown nowhere,
   used by the caddie) is measured at load on a flat calm fairway with the real sim.
   Gotcha: tests that roll a ball from the tee must start on fairway (`flatHole` sets

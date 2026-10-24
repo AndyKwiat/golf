@@ -4,7 +4,7 @@
 // Wind {x, z} (m/s) acts on the airborne ball through air-relative velocity.
 // stepShot() advances exactly one tick (DT) using SUBSTEPS substeps. The same function drives
 // live play and the cheat-mode preview, so previews are exact.
-import { DT, SUBSTEPS, G, ROLL_FACTOR, KD, KL, SPIN_DECAY, SURF, BOUNCE_TO_ROLL, BALL_R, CUP_R, CUP_CAPTURE_SPEED, REST_SPEED, MAX_SHOT_TICKS } from './constants.js';
+import { DT, SUBSTEPS, G, ROLL_FACTOR, KD, KL, SPIN_DECAY, SURF, BACKSPIN_BITE, BOUNCE_TO_ROLL, BALL_R, CUP_R, CUP_CAPTURE_SPEED, REST_SPEED, MAX_SHOT_TICKS } from './constants.js';
 import { len2, sin, cos } from '../../sim/math.js';
 
 const NO_WIND = { x: 0, z: 0 };
@@ -132,7 +132,7 @@ export function stepShot(b, hole, ctx) {
         if (vn < 0) {
           const P = SURF[surf];
           const tx = b.vx - vn * nx, ty = b.vy - vn * ny, tz = b.vz - vn * nz;
-          const keep = 1 - Math.min(0.95, P.tf + b.spin * P.grip);
+          const keep = 1 - Math.min(0.95, P.tf + BACKSPIN_BITE * b.spin * P.grip);
           const out = -vn * P.e;
           b.vx = tx * keep + out * nx; b.vy = ty * keep + out * ny; b.vz = tz * keep + out * nz;
           b.spin *= 0.5;
