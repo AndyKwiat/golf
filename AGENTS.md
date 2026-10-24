@@ -110,8 +110,9 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   **air-relative** velocity `v − wind`, so wind pushes, holds up and helps the ball. Spin and
   sidespin decay (`SPIN_DECAY`); sidespin is zeroed at the first bounce. Wind never affects
   rolling (putts are wind-free). `hole.wind = {x, z}` m/s, 3–13 m/s, from the seed.
-  Shaping is deliberately exaggerated (`CURVE_SIDESPIN = 0.16`): full draw/fade bends a drive
-  ~123 yd, a 7i ~52 yd, a SW ~18 yd; each 25% step ≈ 32 yd on a drive (Shift+Z/X = 5% steps).
+  Shaping is deliberately exaggerated (`CURVE_SIDESPIN = 0.256`): full draw/fade bends a drive
+  ~183 yd, a 7i ~81 yd, a SW ~29 yd. Curve is continuous: holding Z (fade) / X (draw) sweeps it
+  at 1.2/s (Shift 0.25/s) with a short stop at straight (main.js `sampleHeldInput`).
   Ground contact: reflect with surface restitution `e`, lose tangential speed
   `tf + BACKSPIN_BITE·spin·grip` (`BACKSPIN_BITE = 1.4`, capped at 95%);
   below `BOUNCE_TO_ROLL` it rolls (putting-game rolling model with per-surface `roll` friction).
@@ -136,11 +137,16 @@ tests/                sim.test (putting), math.test, golf.test, browser.test
   power = fraction of 30 m flat-green roll. Lies (`LIE`) scale speed/spin (rough, sand, …).
 - Results: `rest | holed | water | oob`. Water → +1 and drop at the last dry point, walked back
   toward the shot origin until clear of water/sand. OOB → +1, replay from the previous spot.
-- Auto caddie (`_caddie`, on every new lie, club change and curve change): putter on the green;
+- Auto caddie (`_caddie`, on every new lie and club change): putter on the green;
   otherwise the shortest club whose nominal total reaches (driver only from the tee). Target =
   cup if in range, else the centerline one club-length ahead. Power by bisection on the real sim;
-  then the aim is corrected (3 sim iterations) for wind + curve drift so the default shot really
-  finishes on the target line — that's what keeps cheat mode easy in strong wind. On fairway
+  then the aim is corrected (`_steerTo`, 3 sim iterations) for wind + curve drift so the default
+  shot really finishes on the target line — that's what keeps cheat mode easy in strong wind.
+  These corrections simulate on a **treeless** copy of the hole (`_finishDir`): with trees, one
+  deflection sends the end point anywhere and the aim used to jump 20–80° (trees are handled by
+  `_avoidHazards`). `setCurve {reaim}` does NOT rerun the caddie: it keeps the player's aim/power
+  and only shifts the aim by the change in curve drift (the player's line is cached across
+  consecutive-tick curve changes so holding Z/X doesn't accumulate drift). On fairway
   targets it keeps full power if a full shot still finishes in the fairway.
 - Generator layout: par 4s dogleg 80% of the time (35–85 m offset), par 5s always double-bend
   (often S). `params.corners = [{z, dir}]` records bends; tree clusters guard the inside corners.
@@ -181,8 +187,8 @@ URL: `?seed=N&mode=normal&paused=1&cam=overhead&grid=0&hud=0` (mode defaults to 
 · `lookAtHazard(i, 'bunker'|'pond', dist)`. Also `game`, `view`, `CLUBS` objects for poking.
 The putting page has the same style API (`putt`, `autoPutt`, `newGreen`, …).
 
-Keys (golf): ←/→ aim (Shift fine), ↑/↓ power (cheat), Q/E or [ ] club, Z/X draw/fade (±25%,
-re-aims), Space shoot / meter,
+Keys (golf): ←/→ aim (Shift fine), ↑/↓ power (cheat), Q/E or [ ] club, hold Z fade / X draw
+(continuous, keeps your line), Space shoot / meter,
 Enter shoot, N new hole, M mode, C overhead cam, G grid, H hud, P pause; click terrain or
 minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
 

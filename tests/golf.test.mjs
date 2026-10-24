@@ -284,3 +284,24 @@ test('mouseSwing action launches with scaled power + angle error, and replays', 
   c.dispatch({ type: 'mouseSwing', pts: line(800, 1), screenH: 800 }).step();
   assert.equal(c.phase, 'aim');
 });
+
+test('changing curve keeps the player\'s aim (no caddie reset), even from rough near trees', () => {
+  // seed 1, first shot pushed into the rough: setCurve used to rerun the caddie and swing the aim ~20°
+  const g = new GolfGame({ seed: 1 });
+  g.dispatch({ type: 'shoot', aim: g.aim - 0.12 }); g.run(1);
+  while (g.phase === 'moving') g.run(60);
+  assert.equal(g.lie, 'rough');
+  const user = g.aim + 0.1, power = 0.8;
+  g.dispatch({ type: 'setAim', aim: user }).dispatch({ type: 'setPower', power }).run(1);
+  let prev = g.aim;
+  const sweep = [];
+  for (let i = 1; i <= 20; i++) sweep.push(i / 20);
+  for (let i = 19; i >= 0; i--) sweep.push(i / 20);
+  for (const c of sweep) {
+    g.dispatch({ type: 'setCurve', curve: c, reaim: true }).run(1);
+    assert.ok(Math.abs(g.aim - prev) < 0.03, `aim jumped ${g.aim - prev} at curve ${c}`);
+    prev = g.aim;
+  }
+  assert.equal(g.power, power, 'power untouched');
+  assert.ok(Math.abs(g.aim - user) < 1e-3, `aim back at the player's line after sweeping back to straight: ${g.aim - user}`);
+});

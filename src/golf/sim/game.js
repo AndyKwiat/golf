@@ -85,14 +85,7 @@ export class GolfGame {
     this.aim = tAng;
     this.power = this.suggestPower(club, this.distToHole(), this.aim);
     if (club.putter) return;
-    for (let it = 0; it < 3; it++) {
-      const r = simulateShot(this.hole, this.launchFor(this.aim, this.power), { recordPath: false });
-      const ex = r.end.x - b.x, ez = r.end.z - b.z;
-      if (len2(ex, ez) < 1) break;
-      let err = atan2(ez, ex) - tAng;
-      err = atan2(sin(err), cos(err));
-      this.aim -= err;
-    }
+    this._steerTo(tAng, this.curve);
     const toCup = tgt.x === this.hole.cup.x && tgt.z === this.hole.cup.z;
     if (!toCup) {
       // fairway target: hit it full if a full shot still finishes in the fairway
@@ -101,6 +94,36 @@ export class GolfGame {
     }
     this.power = this.suggestPower(club, Math.min(this.distToHole(), tDist * 1.02 + 1), this.aim);
     this._avoidHazards();
+  }
+
+  /**
+   * Direction from the ball to where a shot finishes, ignoring trees. The aim corrections use
+   * this: with trees, one deflection sends the end point anywhere and the aim jumps wildly
+   * (trees are handled separately by _avoidHazards). `landing` uses the first bounce instead:
+   * smooth in aim/curve (the roll-out can tip off a slope). null if the shot barely moves.
+   */
+  _finishDir(aim, power, curve, landing = false) {
+    if (!this._treeless || this._treelessOf !== this.hole) {
+      this._treeless = Object.create(this.hole);
+      this._treelessOf = this.hole;
+      this._treeless.treesNear = () => [];
+    }
+    const r = simulateShot(this._treeless, launchBall(this.hole, this.ball, this.club, aim, power, this.lie, curve), { recordPath: false });
+    const p = landing && r.landing ? r.landing : r.end;
+    const ex = p.x - this.ball.x, ez = p.z - this.ball.z;
+    return len2(ex, ez) < 1 ? null : atan2(ez, ex);
+  }
+
+  /** Correct this.aim (up to `iters` sims) so the shot with `curve` finishes (or lands) along direction `ang`. */
+  _steerTo(ang, curve, iters = 3, landing = false) {
+    for (let it = 0; it < iters; it++) {
+      const d = this._finishDir(this.aim, this.power, curve, landing);
+      if (d === null) break;
+      let err = d - ang;
+      err = atan2(sin(err), cos(err));
+      this.aim -= Math.max(-0.2, Math.min(0.2, err));
+      if (Math.abs(err) < 2e-4) break;
+    }
   }
 
   /**
@@ -200,8 +223,17 @@ export class GolfGame {
         break;
       case 'setCurve':
         if (this.phase === 'aim') {
+          const prev = this.curve;
           this.curve = Math.max(-1, Math.min(1, a.curve));
-          if (a.reaim) this._caddie();
+          // keep the player's own line: shift the aim only by the change in curve drift
+          // (the line is cached while the curve keeps changing with nothing else touched, e.g. Z/X held)
+          if (a.reaim && !this.club.putter && this.curve !== prev) {
+            const k = this._curveLine;
+            const want = k && k.aim === this.aim && k.power === this.power && k.clubId === this.clubId && k.tick === this.tick - 1 && k.x === this.ball.x && k.z === this.ball.z
+              ? k.want : this._finishDir(this.aim, this.power, prev, true);
+            if (want !== null) this._steerTo(want, this.curve, 2, true);
+            this._curveLine = { want, aim: this.aim, power: this.power, clubId: this.clubId, tick: this.tick, x: this.ball.x, z: this.ball.z };
+          }
         }
         break;
       case 'setMode':
