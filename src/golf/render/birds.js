@@ -141,7 +141,7 @@ export class Birds {
     this.smallMesh = mk(birdGeometry(1.4, 0.6, 1.9), MAX_SMALL);
     this.flocks = []; this.sky = []; this.small = [];
     // ducks: paddle around ponds and drift along rivers (2x real size like the other birds)
-    this.duckMesh = new THREE.InstancedMesh(duckGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, flatShading: true }), MAX_DUCKS);
+    this.duckMesh = new THREE.InstancedMesh(duckGeometry(), new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }), MAX_DUCKS);
     this.duckMesh.count = 0; this.duckMesh.frustumCulled = false;
     scene.add(this.duckMesh);
     this.ducks = [];

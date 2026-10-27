@@ -37,10 +37,10 @@ Chromium; SwiftShader WebGL), runs each `--do EXPR` as `window.__golf.EXPR` in o
 and prints final state JSON plus page `errors` (must be `[]`). Flags: `--page --seed --mode
 normal|cheat --cam auto|overhead --grid 0|1 --hud 0|1 --width --height --out`, and
 `--eval CODE` (arbitrary JS with `g = window.__golf`, interleaved in order with `--do`), e.g.
-`--eval "g.view.sun.castShadow = false; g.render()"` — great for isolating rendering artifacts by
+`--eval "g.view.ballShadow.visible = false; g.render()"` — great for isolating rendering artifacts by
 hiding things one at a time. The tool awaits `__golf.whenReady()` after load and after every
 step, so worker-painted textures are always final in the PNG. `shots/` is gitignored scratch.
-`--lite 1` (URL `?lite=1`) skips the deep forest, understory and shadows — use it for
+`--lite 1` (URL `?lite=1`) skips the deep forest and understory — use it for
 gameplay-only shots/tests; the full scene is slow in SwiftShader. Close-ups: `--do "lookAtHazard(0)"` (bunker 0), `--do "lookAtHazard(0, 'pond', 6)"`,
 `--do "placeBall(x, z, lookX, lookZ)"`.
 
@@ -165,6 +165,8 @@ aim/power) · `cycleClub {dir}` · `setCurve {curve ∈ [-1,1], reaim?}` (resets
 lie) · `setMode {mode}` · `newHole {seed}` · `shoot {aim?, power?, club?, curve?}`
 · `swingPress` (normal mode meter, same as putting). Phases: `aim → swing → moving → aim … → holed`.
 Cheat preview = `game.preview()` = `simulateShot(launchFor(...))` with the same `stepShot` — exact.
+The page runs it in `src/golf/preview.worker.js` (~5 ms per preview; the last result stays up
+until the next lands); `whenReady()` also waits for a pending preview.
 
 **Mouse swing** (`mode: 'mouse'`, scoring in `src/golf/sim/mouseswing.js`, pure + tested): the
 player draws a line DOWN the screen. Power = selected power × (length / target), target = 30% of
@@ -221,14 +223,14 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
   (view.js), `SHADE_*`, `CONTOUR_STEP` (paint.js).
 - Lighting: `LIGHT_DIR` (≈35° up) drives the sun light + baked hillshade; `SUN_DIR` (≈14° up)
   only places the visible sun disk so it's in frame from the tee. With light at 14° the tree
-  shadows were huge streaks. NeutralToneMapping, exposure 1.15, shadow intensity 0.6, bright
+  shadows were huge streaks. NeutralToneMapping, exposure 1.15, bright
   hemisphere — the user asked for a cheerful look; keep it bright.
 - Forest (`planForest` → `buildTrees`): tier 0 = the sim's `hole.trees` (~550, collide), tier 1 =
   decorative trees within 45 m outside the corridor, tier 2 = deep forest out to ~280 m beyond
   the play rect (~17k, ultra-cheap 14-20 tri crowns). Tiers 0/1 use **dynamic LOD with a dithered
   cross-fade**: `refreshTreeLOD(cameraPos)` (when the camera moved > 8 m) fills a high- and a
   medium-detail mesh per (species, variant) bucket; both hold the instances inside the fade band
-  (`lodUniform` = radius 110 m ± 20 m, plus a 12 m margin > the refresh step) and `lodMaterial`
+  (`lodUniform` = radius 110 m ± 14 m, plus a 12 m margin > the refresh step) and `lodMaterial`
   discards complementary screen-space dither patterns by per-instance camera distance, so there
   is no pop and never a gap. **Always `computeBoundingSphere()` after changing an InstancedMesh's
   instances** — three caches it, and stale bounds culled whole tree meshes (trees blinking in/out
@@ -236,14 +238,15 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
 - **Shadows**: trees cast no realtime shadows. Sun and trees are static, so `bakeTreeShadows`
   (paint.js) rasterizes every tree's ground shadow (ellipsoid/cone/trunk projections along
   `LIGHT_DIR`) into a 1 m grid that the paint workers multiply into the ground textures and the
-  outer terrain gets as vertex colors — shadows everywhere, zero pop-in. The realtime shadow map
-  only covers ±12 m around the ball (the ball is its only caster); the ball is darkened when it
-  rests in a baked shadow (`sampleGrid`).
+  outer terrain gets as vertex colors — shadows everywhere, zero pop-in. There is **no shadow
+  map**: the ball's shadow is a soft decal (`ballShadow`) placed where the `LIGHT_DIR` ray through
+  the ball meets the ground, tilted to the slope and stretched by 1/sin(sun elevation). The ball
+  is darkened (and its decal faded) when it's in a baked shadow (`sampleGrid`).
   Understory bushes/rocks behind the first tree rows. A canopy coverage grid (`canopyGrid`) is
   sent to the paint workers to darken the forest floor under trees; `forestFloor()` in paint.js
   paints moss / needles / leaf litter / dirt / grass patches beyond the rough and out of bounds.
   Beyond the planted forest the horizon ground uses a tiling canopy texture + tree-line rings.
-  Budget: ~3-4M tris/frame incl. shadows; headless SwiftShader takes seconds per first frame
+  Budget: ~2M tris/frame; headless SwiftShader takes seconds per first frame
   (real GPUs are fine) — measure with `renderer.info` before adding more.
 - Shorelines: paint.js computes a signed distance to the nearest water edge (`sd`, ponds via
   blobDist + rivers via riverAt) and paints a ragged 2-6 m band of earth → wet mud with gravel
@@ -276,7 +279,13 @@ minimap to aim; drag the meter (cheat); click a club in the list; wheel zooms.
 - Headless SwiftShader is slow at ~2M tris: the realtime loop runs at a few fps there, so browser
   tests must wait on sim state (e.g. meter value) rather than wall-clock delays.
 - Ball, markers and halo are scaled up with camera distance (ball ×2.5+ in flight) so they're
-  trackable. `logarithmicDepthBuffer` is on (near 0.05, far 9000).
+  trackable.
+- Performance (fill-bound): **no `logarithmicDepthBuffer`** (it writes `gl_FragDepth`, which kills
+  early-z); instead `updateCamera` sets `camera.near` from the camera's clearance to the ground
+  and ball (0.05–1.5 m, far 9000). Pixel ratio capped at 2 (`?dpr=N` overrides; 1 roughly halves GPU time). Ground surfaces
+  keep `MeshStandardMaterial` (its grazing sheen is part of the look); trees, bushes, rocks, ducks
+  and props use Lambert. Measure GPU time on a real GPU with `EXT_disjoint_timer_query_webgl2`
+  around `__golf.advanceVisuals(0.016)` (SwiftShader timings are meaningless).
 - Wind HUD arrow is drawn relative to the camera (up = blowing away from you); in overhead mode
   screen-up is `camera.up`. The flag streams downwind and clouds drift along `hole.wind`.
 - Mountains/hills are vertex-colored rings with 8 rows per column (fewer rows = streaky shading).

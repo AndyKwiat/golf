@@ -14,15 +14,17 @@ import { paintPixels, SHADE_MAIN, SHADE_GREEN, hashf, valueNoise, c255, forestFl
 
 // Readability exaggeration (deliberately unrealistic so terrain shape is obvious)
 const NORMAL_EXAGGERATION = 1.4;
+const UP = new THREE.Vector3(0, 1, 0);
 
 export class GolfView {
   constructor(canvas, game, { lite = false } = {}) {
     this.game = game;
     this.lite = lite;   // lite: no deep forest / understory / shadows (fast headless tests)
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, logarithmicDepthBuffer: true });
-    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-    this.renderer.shadowMap.enabled = !lite;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // No logarithmic depth (it writes gl_FragDepth, which disables early-z): the camera's near
+    // plane follows its clearance instead (updateCamera). No shadow map: the ball's shadow is a
+    // blob decal, tree shadows are baked. Pixel ratio capped at 2; ?dpr=N overrides.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(maxPixelRatio(), window.devicePixelRatio || 1));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NeutralToneMapping;   // keeps colors vivid while allowing brighter lights
     this.renderer.toneMappingExposure = 1.15;
@@ -49,20 +51,16 @@ export class GolfView {
     fill.position.set(-SUN_DIR.x, 0.5, -SUN_DIR.z);
     this.scene.add(fill);
     this.sun = new THREE.DirectionalLight(0xfff5e2, 3.0);
-    this.sun.castShadow = true;
-    // Realtime shadows are only for the ball (tree shadows are baked into the ground textures,
-    // so they never pop). Tight frustum around the ball -> crisp ball shadow.
-    this.sun.shadow.mapSize.set(1024, 1024);
-    const sc = this.sun.shadow.camera;
-    sc.left = -12; sc.right = 12; sc.top = 12; sc.bottom = -12; sc.near = 1; sc.far = 300;
-    this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.intensity = 0.6;   // lighter, friendlier shadows
-    this.lodUniform = { value: new THREE.Vector2(110, 20) };   // tree LOD: cross-fade radius, half band (m)
+    this.lodUniform = { value: new THREE.Vector2(110, 14) };   // tree LOD: cross-fade radius, half band (m)
     this.scene.add(this.sun, this.sun.target);
 
-    // Ball + halo
+    // Ball + halo + shadow. The shadow is a soft decal where the sun ray through the ball meets
+    // the ground (an ellipse stretched along the sun azimuth), so no shadow map is needed.
     this.ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 24, 16), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35 }));
-    this.ball.castShadow = true;
+    this.ballShadow = new THREE.Mesh(new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: blobTexture(), transparent: true, opacity: 0.32, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    this.scene.add(this.ballShadow);
+    this._v = new THREE.Vector3(); this._q = new THREE.Quaternion();
     this.halo = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.085, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.65, depthWrite: false }));
     this.halo.rotation.x = -Math.PI / 2;
     this.scene.add(this.ball, this.halo);
@@ -212,7 +210,6 @@ export class GolfView {
     for (let k = 0; k < NV; k++) { const v = 1 - SHADOW_DARK * sampleGrid(this.treeShadow, pos[k * 3], pos[k * 3 + 2]); vcol[k * 3] = vcol[k * 3 + 1] = v; vcol[k * 3 + 2] = Math.min(1, v * 1.04); }
     geo.setAttribute('color', new THREE.BufferAttribute(vcol, 3));
     this.terrainMesh = new THREE.Mesh(geo, [new THREE.MeshStandardMaterial({ map: outerTex, roughness: 1, vertexColors: true }), mainMat]);
-    this.terrainMesh.receiveShadow = true;
     this.holeGroup.add(this.terrainMesh);
     this.pickMeshes = [this.terrainMesh];
 
@@ -253,7 +250,6 @@ export class GolfView {
       paints.push({ area: (r.xmax - r.xmin) * (r.zmax - r.zmin) / (px * px), run: () => this.paintInto(mat, r, px, r.green ? SHADE_GREEN * 0.4 : SHADE_MAIN * 0.3, !!r.green, 0.25,
         r.green ? (plain, grid) => { this.greenTex = { plain, grid }; mat.map = this.showGrid ? grid : plain; } : null) });
       const mesh = new THREE.Mesh(pg, mat);
-      mesh.receiveShadow = true;
       this.holeGroup.add(mesh);
       this.pickMeshes.push(mesh);
     }
@@ -304,7 +300,6 @@ export class GolfView {
       wg.setIndex(widx); wg.computeVertexNormals();
       const water = new THREE.Mesh(wg, waterMaterial(this.sky.envMap(this.renderer)));
       water.position.y = p.level;
-      water.receiveShadow = true;
       water.userData.pond = true;
       this.holeGroup.add(water);
       // foam line
@@ -347,7 +342,7 @@ export class GolfView {
       const t = wn.clone(); t.needsUpdate = true;
       const mat = waterMaterial(this.sky.envMap(this.renderer));
       mat.normalMap = t; mat.normalScale = new THREE.Vector2(0.35, 0.35);
-      const m = new THREE.Mesh(g, mat); m.receiveShadow = true;
+      const m = new THREE.Mesh(g, mat);
       this.holeGroup.add(m);
       const down = rv.levels[0] >= rv.levels[rv.levels.length - 1] ? 1 : -1;   // flow downhill
       this.flowing.push({ tex: t, vx: 0, vy: -0.32 * down });
@@ -365,10 +360,10 @@ export class GolfView {
       this.holeGroup.add(m);
     }
     const hy = h.height(cup.x, cup.z);
-    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 2.4, 8), new THREE.MeshStandardMaterial({ color: 0xf5f5f5 }));
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 2.4, 8), new THREE.MeshLambertMaterial({ color: 0xf5f5f5 }));
     pin.position.set(cup.x, hy + 1.2, cup.z);
     const flagGeo = new THREE.PlaneGeometry(0.75, 0.5, 10, 4); flagGeo.translate(0.375, 0, 0);
-    this.flag = new THREE.Mesh(flagGeo, new THREE.MeshStandardMaterial({ color: 0xe53935, emissive: 0x7a1010, side: THREE.DoubleSide }));
+    this.flag = new THREE.Mesh(flagGeo, new THREE.MeshLambertMaterial({ color: 0xe53935, emissive: 0x7a1010, side: THREE.DoubleSide }));
     this.flag.position.set(cup.x, hy + 2.12, cup.z);
     this.flag.rotation.y = Math.atan2(-h.wind.z, h.wind.x);   // flag streams downwind
     this.windStrength = Math.hypot(h.wind.x, h.wind.z);
@@ -379,7 +374,7 @@ export class GolfView {
 
     // Tee markers
     for (const sx of [-2.2, 2.2]) {
-      const m = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), new THREE.MeshStandardMaterial({ color: 0x1e5bd8 }));
+      const m = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), new THREE.MeshLambertMaterial({ color: 0x1e5bd8 }));
       m.position.set(h.tee.x + sx, h.height(h.tee.x + sx, h.tee.z + 1) + 0.1, h.tee.z + 1);
       this.holeGroup.add(m);
     }
@@ -470,10 +465,10 @@ export class GolfView {
   buildTrees() {
     const { trees, bushes, rocks } = this.forest;
     const leafTex = this.leafTex || (this.leafTex = leafTexture());
-    const leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: leafTex, roughness: 0.85, side: THREE.DoubleSide });
-    const needleMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: this.needleTex || (this.needleTex = needleTexture()), roughness: 0.9, side: THREE.DoubleSide });
+    const leafMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: leafTex, side: THREE.DoubleSide });
+    const needleMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: this.needleTex || (this.needleTex = needleTexture()), side: THREE.DoubleSide });
     const farMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-    const barkMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
+    const barkMat = new THREE.MeshLambertMaterial({ vertexColors: true });
     const COL = { pine: [0.15, 0.4, 0.19], redwood: [0.13, 0.33, 0.17], round: [0.2, 0.46, 0.15], poplar: [0.16, 0.42, 0.14], birch: [0.3, 0.55, 0.18] };
     const crown = (type, seed, lod) => type === 'pine' ? pineCrown(seed, lod) : type === 'redwood' ? redwoodCrown(seed, lod)
       : type === 'poplar' ? blobCrown(seed, { lod, blobs: 10, spreadY: 1.7, spreadXZ: 0.5, color: COL.poplar })
@@ -490,11 +485,11 @@ export class GolfView {
     })());
     const BARK = { pine: [0.45, 0.31, 0.2], round: [0.42, 0.3, 0.2], poplar: [0.45, 0.35, 0.25], redwood: [0.58, 0.28, 0.16], birch: [0.93, 0.91, 0.86] };
     const m4 = new THREE.Matrix4(), col = new THREE.Color(), up = new THREE.Vector3(0, 1, 0), q = new THREE.Quaternion(), one = new THREE.Quaternion();
-    const mk = (geo, mat, n, shadow) => { const im = new THREE.InstancedMesh(geo, mat, Math.max(1, n)); im.count = n; im.castShadow = shadow; im.receiveShadow = shadow; this.holeGroup.add(im); return im; };
+    const mk = (geo, mat, n) => { const im = new THREE.InstancedMesh(geo, mat, Math.max(1, n)); im.count = n; this.holeGroup.add(im); return im; };
     // trunks, one mesh per tier
     for (let tier = 0; tier < 3; tier++) {
       const list = trees.filter(t => t.tier === tier);
-      const im = mk(geos.trunk[tier], barkMat, list.length, false);
+      const im = mk(geos.trunk[tier], barkMat, list.length);
       list.forEach((t, i) => {
         const top = t.shape === 'cone' ? t.crownBase + 1.3 : t.crownY + 0.3;
         m4.compose(new THREE.Vector3(t.x, t.y0 - 0.3, t.z), one, new THREE.Vector3(t.trunkR, top, t.trunkR)); im.setMatrixAt(i, m4);
@@ -503,7 +498,7 @@ export class GolfView {
       if (im.instanceColor) im.instanceColor.needsUpdate = true;
     }
     // Crowns. Tier 2 (deep forest) is static ultra-low detail. Tiers 0/1 use dynamic LOD:
-    // each (type, variant) bucket has a high-detail mesh (shadows) and a medium mesh, and
+    // each (type, variant) bucket has a high-detail mesh and a medium mesh, and
     // refreshTreeLOD() moves instances between them by distance to the camera.
     const crownMatrix = t => {
       q.setFromAxisAngle(up, hashf(t.x, t.z) * 6.28);
@@ -523,22 +518,22 @@ export class GolfView {
     for (const [key, arr] of buckets) {
       const [type, kind, vS] = key.split('|'), v = +vS, cone = type === 'pine' || type === 'redwood';
       if (kind === 'f') {
-        const im = mk(geos[type][2][0], farMat, arr.length, false);
+        const im = mk(geos[type][2][0], farMat, arr.length);
         arr.forEach((t, i) => { im.setMatrixAt(i, crownMatrix(t)); im.setColorAt(i, crownColor(t)); });
         if (im.instanceColor) im.instanceColor.needsUpdate = true;
         continue;
       }
       const mat = cone ? needleMat : leafMat;
-      const hi = mk(geos[type][0][v], this.lodMaterial(mat, true), arr.length, false), lo = mk(geos[type][1][v % 2], this.lodMaterial(mat, false), arr.length, false);
+      const hi = mk(geos[type][0][v], this.lodMaterial(mat, true), arr.length), lo = mk(geos[type][1][v % 2], this.lodMaterial(mat, false), arr.length);
       this.lodBuckets.push({ hi, lo, items: arr.map(t => ({ x: t.x, z: t.z, m: crownMatrix(t), c: crownColor(t) })) });
     }
     this.lodAt = null;
     this.refreshTreeLOD(new THREE.Vector3(this.game.ball.x, 0, this.game.ball.z));
     // understory
     const bushGeo = this.bushGeo || (this.bushGeo = bushGeometry(5)), rockGeo = this.rockGeo || (this.rockGeo = rockGeometry(9));
-    const bushIm = mk(bushGeo, new THREE.MeshStandardMaterial({ vertexColors: true, map: leafTex, roughness: 0.9 }), bushes.length, false);
+    const bushIm = mk(bushGeo, new THREE.MeshLambertMaterial({ vertexColors: true, map: leafTex }), bushes.length);
     bushes.forEach((b, i) => { q.setFromAxisAngle(up, b.a); m4.compose(new THREE.Vector3(b.x, b.y - 0.1, b.z), q, new THREE.Vector3(b.s * 1.4, b.s, b.s * 1.4)); bushIm.setMatrixAt(i, m4); });
-    const rockIm = mk(rockGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }), rocks.length, false);
+    const rockIm = mk(rockGeo, new THREE.MeshLambertMaterial({ vertexColors: true }), rocks.length);
     rocks.forEach((b, i) => { q.setFromAxisAngle(up, b.a); m4.compose(new THREE.Vector3(b.x, b.y - 0.15 * b.s, b.z), q, new THREE.Vector3(b.s, b.s, b.s)); rockIm.setMatrixAt(i, m4); });
     this.treeCount = trees.length;
   }
@@ -640,7 +635,7 @@ export class GolfView {
       }
     }
     const geos = this.shoreRockGeos || (this.shoreRockGeos = [21, 22, 23, 24].map(sd => rockGeometry(sd)));
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
+    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
     for (let v = 0; v < 4; v++) {
       const list = rocks.filter(r => r.v === v);
@@ -817,11 +812,23 @@ export class GolfView {
     if (!cb.air || by < gy) by = Math.max(by, gy);
     if (game.phase === 'holed') { this.sinkT = Math.min(1, this.sinkT + dtReal * 3); by = gy - this.sinkT * 0.08; } else this.sinkT = 0;
     this.ball.position.set(bx, by + BALL_R, bz);
-    // ball in a baked tree shadow: darken it to match (only the ball has a realtime shadow)
+    // ball in a baked tree shadow: darken it to match (trees cast no realtime shadows)
     { const sh = this.treeShadow && !cb.air ? sampleGrid(this.treeShadow, bx, bz) : 0; this.ball.material.color.setScalar(1 - 0.5 * sh); }
     const camDist = this.camera.position.distanceTo(this.ball.position);
     const bs = cb.air ? Math.max(2.5, camDist / 10) : Math.max(1, camDist / 35);  // exaggerated in flight so it's trackable
     this.ball.scale.setScalar(bs);
+    {   // blob shadow: follow the sun ray from the ball center down to the ground (fixed-point on height)
+      const cy = by + BALL_R * bs;
+      let t = Math.max(0, (cy - gy) / SUN_DIR.y), sx = bx, sz = bz, sy = gy;
+      for (let i = 0; i < 4 && t > 0; i++) { sx = bx - SUN_DIR.x * t; sz = bz - SUN_DIR.z * t; sy = h.height(sx, sz); t = Math.max(0, (cy - sy) / SUN_DIR.y); }
+      const [gx, gz] = h.grad(sx, sz), r = BALL_R * bs, sh = this.treeShadow ? sampleGrid(this.treeShadow, sx, sz) : 0;
+      this.ballShadow.position.set(sx, sy + 0.004, sz);
+      // tilt to the ground plane, then stretch along the sun azimuth (low sun = longer shadow)
+      this.ballShadow.quaternion.setFromUnitVectors(UP, this._v.set(-gx, 1, -gz).normalize()).multiply(this._q.setFromAxisAngle(UP, Math.atan2(SUN_DIR.x, SUN_DIR.z)));
+      this.ballShadow.scale.set(r, 1, r / SUN_DIR.y);
+      this.ballShadow.material.opacity = 0.32 * (1 - 0.7 * sh);
+      this.ballShadow.visible = game.phase !== 'holed' && t < 160;
+    }
     this.halo.position.set(bx, gy + 0.03, bz);
     this.halo.scale.setScalar(Math.max(1, camDist / 25));
     this.halo.visible = game.phase !== 'holed' && game.phase !== 'moving';
@@ -941,6 +948,11 @@ export class GolfView {
     else { const f = 1 - Math.exp(-dtReal * k); this.camPos.lerp(pos, f); this.camLook.lerp(look, f); }
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
+    // Near plane from the camera's clearance (to the ground under it and to the ball): as far out
+    // as possible, so the plain 24-bit depth buffer has precision to spare out to the horizon.
+    const cp = this.camPos, clear = Math.min(cp.y - h.height(cp.x, cp.z), cp.distanceTo(this.ball.position));
+    const near = Math.min(1.5, Math.max(0.05, clear * 0.4));   // capped: trees can be closer than the ground
+    if (Math.abs(near - this.camera.near) > 0.01 * near) { this.camera.near = near; this.camera.updateProjectionMatrix(); }
   }
 
   pick(nx, ny) {
@@ -1035,6 +1047,21 @@ function pinTexture() {
   x.beginPath(); x.moveTo(8, 8); x.lineTo(56, 8); x.lineTo(32, 88); x.closePath(); x.fill(); x.stroke();
   x.fillStyle = '#e53935'; x.beginPath(); x.moveTo(18, 16); x.lineTo(46, 16); x.lineTo(32, 62); x.closePath(); x.fill();
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/** Alpha map for the ball's blob shadow: solid core, soft rim (white = opaque). */
+function blobTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, '#fff'); g.addColorStop(0.55, '#e6e6e6'); g.addColorStop(1, '#000');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+/** Pixel-ratio cap: 2 by default, `?dpr=N` overrides (e.g. 1 on weak GPUs). */
+function maxPixelRatio() {
+  const q = Number(new URLSearchParams(globalThis.location?.search || '').get('dpr'));
+  return q > 0 ? q : 2;
 }
 
 export { radialTexture };

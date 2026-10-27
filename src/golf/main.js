@@ -1,5 +1,6 @@
 // Full-hole game entry: fixed-timestep loop, input -> actions, HUD, minimap, window.__golf API.
 import { GolfGame } from './sim/game.js';
+import { cleanParams } from './sim/hole.js';
 import { CLUBS, PUTTER, flatCarry } from './sim/clubs.js';
 import { DT, SWING, LIE, PUTT_MAX_FLAT } from './sim/constants.js';
 import { botShot, botPlayHole } from './sim/bot.js';
@@ -355,15 +356,40 @@ function updateHud(preview) {
   if (g.phase === 'holed') $('help').textContent = 'Space / N: new hole';
 }
 
-// ------------------------------------------------------------------ preview (memoized)
-let previewKey = '', preview = null;
+// ------------------------------------------------------------------ preview (memoized, in a worker)
+// A preview sim takes ~5 ms, so it runs in a worker: while a key is held the last result stays up
+// until the next lands (a frame later). One request in flight; newer ones replace the queued one.
+// Falls back to the main thread without workers.
+let previewKey = '', previewBase = '', preview = null;
+const pw = { worker: null, busy: false, next: null, hole: null, waiters: [] };
+try {
+  pw.worker = new Worker(new URL('./preview.worker.js', import.meta.url), { type: 'module' });
+  pw.worker.onmessage = e => {
+    pw.busy = false;
+    if (e.data.key === previewKey) { preview = e.data.r; view.setPreview(preview); }
+    if (pw.next) sendPreview(pw.next);
+    else for (const w of pw.waiters.splice(0)) w();
+  };
+  pw.worker.onerror = e => { console.error('preview worker error', e.message); pw.worker = null; previewKey = ''; pw.busy = false; for (const w of pw.waiters.splice(0)) w(); };
+} catch { pw.worker = null; }
+function sendPreview(req) {
+  pw.busy = true; pw.next = null;
+  const params = pw.hole === game.hole ? null : cleanParams(game.hole.params);
+  pw.hole = game.hole;
+  pw.worker.postMessage({ ...req, params });
+}
+/** Resolves once no preview is pending (screenshots / whenReady). */
+function previewSettled() { return pw.busy ? new Promise(res => pw.waiters.push(res)) : Promise.resolve(); }
 function updatePreview() {
   if (game.mode === 'normal' || game.phase !== 'aim') { previewKey = ''; preview = null; view.setPreview(null); return; }
-  const key = `${game.seed}|${game.ball.x}|${game.ball.z}|${game.aim}|${game.power}|${game.clubId}|${game.curve}`;
+  const base = `${game.seed}|${game.ball.x}|${game.ball.z}`, key = `${base}|${game.aim}|${game.power}|${game.clubId}|${game.curve}`;
   if (key === previewKey) return;
   previewKey = key;
-  preview = game.preview();
-  view.setPreview(preview);
+  // a new lie: drop the old preview rather than show it from the wrong spot while the new one runs
+  if (base !== previewBase) { previewBase = base; preview = null; view.setPreview(null); }
+  if (!pw.worker) { preview = game.preview(); view.setPreview(preview); return; }
+  const req = { key, launch: game.launchFor() };
+  if (pw.busy) pw.next = req; else sendPreview(req);
 }
 
 // ------------------------------------------------------------------ loop
@@ -435,6 +461,6 @@ window.__golf = {
   render() { draw(1, 0, true); },
   buildMs() { return view.buildMs; },
   /** Resolves when the current hole's textures have finished painting (await before screenshots). */
-  whenReady() { return view.ready.then(() => { draw(1, 0, true); return true; }); },
+  whenReady() { return view.ready.then(() => { draw(1, 0, true); return previewSettled(); }).then(() => { draw(1, 0, true); return true; }); },
 };
 window.__golfReady = true;

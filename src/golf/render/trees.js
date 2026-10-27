@@ -291,7 +291,7 @@ export function reedClump(seed) {
 
 /** Material for reeds: double-sided, vertex colors, wind sway in the vertex shader. */
 export function reedMaterial(windDir) {
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.9 });
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
   m.userData.time = { value: 0 };
   m.onBeforeCompile = sh => {
     sh.uniforms.uTime = m.userData.time;
